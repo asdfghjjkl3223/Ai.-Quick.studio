@@ -3,16 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI Quick Studio - Production</title>
+    <title>AI Quick Studio - Pro</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, onSnapshot, updateDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, addDoc, updateDoc, increment } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
-        // Your Config (Verified & Fixed)
+        // Firebase Config
         const firebaseConfig = {
             apiKey: "AIzaSyAgpcpxQkz9pBPaVuTtPEXvAXIHbxtwX-g",
             authDomain: "ai-quick-studio.firebaseapp.com",
@@ -27,14 +27,302 @@
         const db = getFirestore(app);
         const provider = new GoogleAuthProvider();
 
-        // Safe Login Function
+        let currentUserEmail = "";
+        let currentCredits = 0;
+        let selectedAmount = "149"; // Default ₹149 plan
+
+        // --- 1. Navigation Logic ---
+        window.switchView = (viewId) => {
+            document.querySelectorAll('.view-section').forEach(v => v.classList.add('hidden'));
+            document.querySelectorAll('.nav-btn').forEach(b => {
+                b.classList.remove('text-amber-500', 'bg-amber-500/10');
+                b.classList.add('text-zinc-500');
+            });
+            
+            document.getElementById(viewId).classList.remove('hidden');
+            document.getElementById('btn-' + viewId).classList.remove('text-zinc-500');
+            document.getElementById('btn-' + viewId).classList.add('text-amber-500', 'bg-amber-500/10');
+        };
+
+        // --- 2. Auth Logic ---
         window.login = async () => {
             const btn = document.getElementById('login-btn');
             btn.innerHTML = "Connecting...";
-            btn.disabled = true;
             try {
                 const result = await signInWithPopup(auth, provider);
                 const user = result.user;
+                const userRef = doc(db, 'users', user.email);
+                const snap = await getDoc(userRef);
+                
+                if (!snap.exists()) {
+                    await setDoc(userRef, {
+                        name: user.displayName, email: user.email, credits: 20,
+                        base_character: "yah wala character", createdAt: new Date().toISOString()
+                    });
+                }
+            } catch (e) { alert("Login Error: " + e.message); btn.innerHTML = "Continue with Google"; }
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                currentUserEmail = user.email;
+                document.getElementById('auth-screen').classList.add('hidden');
+                document.getElementById('app-interface').classList.remove('hidden');
+                document.getElementById('u-name').innerText = user.displayName.split(' ')[0];
+                
+                // Live Credits
+                onSnapshot(doc(db, 'users', user.email), (d) => {
+                    if(d.exists()) {
+                        currentCredits = d.data().credits;
+                        document.getElementById('c-count').innerText = currentCredits + " Cr";
+                        document.getElementById('dash-credits').innerText = currentCredits;
+                    }
+                });
+            } else {
+                document.getElementById('auth-screen').classList.remove('hidden');
+                document.getElementById('app-interface').classList.add('hidden');
+            }
+        });
+
+        window.logout = () => signOut(auth);
+
+        // --- 3. FULL FEATURE LOGIC ---
+
+        // Select Plan
+        window.selectPlan = (amount, element) => {
+            selectedAmount = amount;
+            document.querySelectorAll('.plan-card').forEach(c => c.classList.remove('border-amber-500', 'bg-amber-500/10'));
+            element.classList.add('border-amber-500', 'bg-amber-500/10');
+            document.getElementById('pay-amount-display').innerText = "₹" + amount;
+        };
+
+        // Submit UPI Request to Admin
+        window.submitUPIRequest = async () => {
+            const utr = document.getElementById('utr-input').value;
+            const btn = document.getElementById('submit-upi-btn');
+            
+            if(utr.length < 6) { alert("Please enter a valid Transaction ID!"); return; }
+            
+            btn.innerText = "Sending Request...";
+            btn.disabled = true;
+
+            try {
+                await addDoc(collection(db, 'upi_requests'), {
+                    userEmail: currentUserEmail,
+                    amount: selectedAmount,
+                    trxId: utr,
+                    status: 'pending',
+                    timestamp: new Date().toISOString()
+                });
+                alert("✅ Request Sent! Admin will verify and add credits shortly.");
+                document.getElementById('utr-input').value = "";
+                switchView('view-dashboard');
+            } catch(e) { alert("Error: " + e.message); }
+            
+            btn.innerHTML = "Submit Request <i data-lucide='check-circle-2' class='w-4 h-4'></i>";
+            btn.disabled = false;
+            lucide.createIcons();
+        };
+
+        // Generate Image (Deduct Credits)
+        window.generateImage = async () => {
+            const prompt = document.getElementById('img-prompt').value;
+            if(currentCredits < 5) {
+                alert("❌ Not enough credits! Please recharge.");
+                switchView('view-credits');
+                return;
+            }
+            if(!prompt) { alert("Please enter a prompt!"); return; }
+
+            const btn = document.getElementById('gen-btn');
+            btn.innerHTML = "<i data-lucide='loader-2' class='w-5 h-5 animate-spin'></i> Generating...";
+            btn.disabled = true;
+
+            try {
+                // Deduct 5 credits from Firestore
+                await updateDoc(doc(db, 'users', currentUserEmail), {
+                    credits: increment(-5)
+                });
+                
+                // Simulate generation delay
+                setTimeout(() => {
+                    alert("✨ Image generation task started successfully for 'yah wala character'!");
+                    btn.innerHTML = "Create Image (-5 Credits) <i data-lucide='sparkles' class='w-5 h-5'></i>";
+                    btn.disabled = false;
+                    document.getElementById('img-prompt').value = "";
+                    lucide.createIcons();
+                }, 2000);
+            } catch(e) { alert("Error: " + e.message); btn.disabled = false; }
+        };
+
+    </script>
+
+    <style>
+        body { background-color: #0a0a0a; font-family: sans-serif; }
+        .glass { background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); backdrop-filter: blur(12px); }
+        .amber-gradient { background: linear-gradient(135deg, #f59e0b, #d97706); }
+        /* Hide scrollbar */
+        ::-webkit-scrollbar { display: none; }
+    </style>
+</head>
+<body class="text-white pb-28 selection:bg-amber-500/30">
+
+    <div id="auth-screen" class="min-h-screen flex flex-col items-center justify-center p-8 text-center relative overflow-hidden">
+        <div class="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(245,158,11,0.1)_0%,transparent_60%)]"></div>
+        <div class="z-10 w-full max-w-sm">
+            <div class="w-24 h-24 amber-gradient rounded-3xl flex items-center justify-center mx-auto mb-8 shadow-[0_0_40px_rgba(245,158,11,0.4)]">
+                <i data-lucide="zap" class="text-black w-12 h-12 fill-current"></i>
+            </div>
+            <h1 class="text-4xl font-black tracking-tight mb-2">AI QUICK STUDIO</h1>
+            <p class="text-zinc-400 mb-10">Your Virtual Influencer Engine</p>
+            <button id="login-btn" onclick="login()" class="w-full bg-white text-black font-extrabold py-4 px-6 rounded-2xl flex items-center justify-center gap-3 active:scale-95 transition-all shadow-xl">
+                <img src="https://www.google.com/favicon.ico" class="w-5 h-5"> Continue with Google
+            </button>
+        </div>
+    </div>
+
+    <div id="app-interface" class="hidden">
+        
+        <header class="p-5 flex justify-between items-center sticky top-0 bg-[#0a0a0a]/90 backdrop-blur-xl z-30 border-b border-white/5">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 bg-zinc-900 rounded-full flex items-center justify-center border border-white/10 shadow-inner">
+                    <i data-lucide="user" class="w-5 h-5 text-zinc-400"></i>
+                </div>
+                <div>
+                    <h2 class="text-lg font-bold leading-tight">Hey, <span id="u-name" class="text-amber-500">User</span></h2>
+                    <p class="text-[10px] text-emerald-400 font-bold uppercase tracking-widest flex items-center gap-1"><span class="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></span> Online</p>
+                </div>
+            </div>
+            <div class="bg-amber-500/10 border border-amber-500/30 px-4 py-2 rounded-2xl flex items-center gap-2">
+                <i data-lucide="coins" class="w-4 h-4 text-amber-500"></i>
+                <span id="c-count" class="text-amber-500 font-black text-sm">--</span>
+            </div>
+        </header>
+
+        <div class="p-5 max-w-md mx-auto">
+            
+            <div id="view-dashboard" class="view-section space-y-5 animate-in fade-in duration-300">
+                
+                <div class="amber-gradient p-6 rounded-[2rem] relative overflow-hidden shadow-[0_10px_40px_rgba(245,158,11,0.2)]">
+                    <i data-lucide="zap" class="absolute -right-4 -bottom-4 w-32 h-32 text-black opacity-10"></i>
+                    <p class="text-black/70 text-xs font-extrabold uppercase tracking-widest mb-1">Available Power</p>
+                    <h2 class="text-5xl font-black text-black tracking-tighter" id="dash-credits">0</h2>
+                    <p class="text-black/80 font-medium text-sm mt-3 flex items-center gap-1"><i data-lucide="check-circle" class="w-4 h-4"></i> System Ready</p>
+                </div>
+
+                <div class="glass p-5 rounded-3xl">
+                    <div class="flex items-center justify-between mb-4">
+                        <h4 class="font-bold text-sm text-zinc-300 uppercase tracking-widest">Active Face-Lock</h4>
+                        <span class="bg-emerald-500/20 text-emerald-400 px-2 py-1 rounded text-[10px] font-bold">100% Locked</span>
+                    </div>
+                    <div class="bg-black/50 p-4 rounded-2xl border border-white/5 flex items-center gap-4">
+                        <div class="w-12 h-12 bg-zinc-800 rounded-xl flex items-center justify-center border border-zinc-700">
+                            <i data-lucide="scan-face" class="text-amber-500 w-6 h-6"></i>
+                        </div>
+                        <div>
+                            <p class="font-mono text-amber-500 font-bold">"yah wala character"</p>
+                            <p class="text-[10px] text-zinc-500">Global consistency enabled</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="view-studio" class="view-section hidden space-y-5 animate-in slide-in-from-bottom-4 duration-300">
+                <div class="glass p-6 rounded-[2rem]">
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="p-3 bg-amber-500/20 rounded-xl border border-amber-500/30">
+                            <i data-lucide="image" class="w-6 h-6 text-amber-500"></i>
+                        </div>
+                        <div>
+                            <h3 class="font-bold text-xl">Image Studio</h3>
+                            <p class="text-xs text-zinc-500">Cost: 5 Credits / Image</p>
+                        </div>
+                    </div>
+                    
+                    <label class="text-xs font-bold text-zinc-400 uppercase ml-1 mb-2 block">Scene Description</label>
+                    <textarea id="img-prompt" class="w-full bg-black/60 rounded-2xl p-4 text-sm border border-white/10 mb-4 focus:border-amber-500 outline-none text-white resize-none" placeholder="What is 'yah wala character' doing? (e.g. wearing a black suit in neon city)" rows="4"></textarea>
+                    
+                    <div class="flex gap-2 mb-6">
+                        <span class="px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-[10px] text-zinc-400">Cinematic</span>
+                        <span class="px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-[10px] text-zinc-400">8k Resolution</span>
+                        <span class="px-3 py-1.5 bg-amber-500/10 border border-amber-500/20 rounded-lg text-[10px] text-amber-500">Face-Lock On</span>
+                    </div>
+
+                    <button id="gen-btn" onclick="generateImage()" class="w-full amber-gradient text-black font-black py-4 rounded-2xl active:scale-95 transition-all shadow-lg flex justify-center items-center gap-2">
+                        Create Image (-5 Credits) <i data-lucide="sparkles" class="w-5 h-5"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div id="view-credits" class="view-section hidden space-y-5 animate-in slide-in-from-bottom-4 duration-300">
+                <div class="glass p-6 rounded-[2rem]">
+                    <h3 class="font-black text-xl mb-1 text-white">Recharge Power</h3>
+                    <p class="text-xs text-zinc-500 mb-6">Select a plan and pay via UPI</p>
+
+                    <div class="grid grid-cols-3 gap-3 mb-6">
+                        <div onclick="selectPlan('49', this)" class="plan-card glass p-3 rounded-2xl text-center cursor-pointer transition-all border border-transparent">
+                            <p class="text-[10px] text-zinc-400 uppercase font-bold">Starter</p>
+                            <h4 class="font-black text-white text-lg">₹49</h4>
+                            <p class="text-[10px] text-amber-500 font-bold">100 Cr</p>
+                        </div>
+                        <div onclick="selectPlan('149', this)" class="plan-card border-amber-500 bg-amber-500/10 p-3 rounded-2xl text-center cursor-pointer transition-all border relative">
+                            <span class="absolute -top-2 left-1/2 -translate-x-1/2 bg-amber-500 text-black text-[8px] font-black px-2 py-0.5 rounded-full uppercase">Popular</span>
+                            <p class="text-[10px] text-zinc-400 uppercase font-bold">Creator</p>
+                            <h4 class="font-black text-white text-lg">₹149</h4>
+                            <p class="text-[10px] text-amber-500 font-bold">500 Cr</p>
+                        </div>
+                        <div onclick="selectPlan('499', this)" class="plan-card glass p-3 rounded-2xl text-center cursor-pointer transition-all border border-transparent">
+                            <p class="text-[10px] text-zinc-400 uppercase font-bold">Pro VIP</p>
+                            <h4 class="font-black text-white text-lg">₹499</h4>
+                            <p class="text-[10px] text-amber-500 font-bold">2000 Cr</p>
+                        </div>
+                    </div>
+                    
+                    <div class="bg-black/80 p-5 rounded-2xl border border-white/5 mb-6 text-center relative">
+                        <div class="absolute top-2 right-3 text-emerald-400 text-[10px] font-bold bg-emerald-500/10 px-2 py-1 rounded">0% Fee</div>
+                        <div class="w-32 h-32 bg-white mx-auto rounded-xl flex items-center justify-center mb-3 p-2">
+                            <i data-lucide="qr-code" class="w-full h-full text-black"></i>
+                        </div>
+                        <p class="text-xs text-zinc-400 font-medium">Scan and pay <span id="pay-amount-display" class="text-white font-bold">₹149</span></p>
+                    </div>
+                    
+                    <div class="space-y-1 mb-6">
+                        <label class="text-[10px] font-bold text-zinc-500 uppercase ml-1">12-Digit Transaction ID (UTR)</label>
+                        <input id="utr-input" type="number" class="w-full bg-black/60 rounded-xl p-4 text-sm border border-white/10 focus:border-amber-500 outline-none text-white font-mono" placeholder="Ex: 4122XXXXXXXX">
+                    </div>
+                    
+                    <button id="submit-upi-btn" onclick="submitUPIRequest()" class="w-full bg-zinc-100 hover:bg-white text-black font-black py-4 rounded-2xl active:scale-95 transition-all flex justify-center items-center gap-2">
+                        Submit Request <i data-lucide="check-circle-2" class="w-4 h-4"></i>
+                    </button>
+                </div>
+            </div>
+
+        </div>
+
+        <nav class="fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-sm glass h-16 rounded-[2rem] flex items-center justify-between px-2 z-40 border border-white/10 shadow-[0_20px_40px_rgba(0,0,0,0.8)]">
+            <button id="btn-view-dashboard" onclick="switchView('view-dashboard')" class="nav-btn text-amber-500 bg-amber-500/10 w-12 h-12 rounded-full flex items-center justify-center transition-all">
+                <i data-lucide="layout-grid" class="w-5 h-5"></i>
+            </button>
+            
+            <button id="btn-view-studio" onclick="switchView('view-studio')" class="nav-btn text-zinc-500 hover:text-white w-12 h-12 rounded-full flex items-center justify-center transition-all">
+                <i data-lucide="sparkles" class="w-5 h-5"></i>
+            </button>
+            
+            <button id="btn-view-credits" onclick="switchView('view-credits')" class="nav-btn text-zinc-500 hover:text-white w-12 h-12 rounded-full flex items-center justify-center transition-all">
+                <i data-lucide="wallet" class="w-5 h-5"></i>
+            </button>
+            
+            <div class="w-px h-8 bg-white/10 mx-1"></div>
+
+            <button onclick="logout()" class="text-rose-500/80 hover:text-rose-500 w-12 h-12 rounded-full flex items-center justify-center">
+                <i data-lucide="log-out" class="w-5 h-5"></i>
+            </button>
+        </nav>
+    </div>
+
+    <script>lucide.createIcons();</script>
+</body>
+</html>                const user = result.user;
                 const userRef = doc(db, 'users', user.email);
                 const snap = await getDoc(userRef);
                 
