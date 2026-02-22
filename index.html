@@ -3,10 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI Quick Studio - Ultimate Pro</title>
-    
-    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <title>AI Quick Studio - Pro Ultimate</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
@@ -32,14 +31,18 @@
         let currentUserEmail = "";
         let currentCredits = 0;
         let selectedAmount = "149";
+        
+        // ADMIN SETTINGS
+        let hfApiKey = "";
+        let baseCharacterPrompt = "yah wala character";
 
         // ===========================
-        // NAVIGATION & UI LOGIC
+        // UI HELPERS
         // ===========================
         window.switchView = (viewId) => {
             document.querySelectorAll('.view-section').forEach(v => v.classList.add('hidden'));
             document.querySelectorAll('.nav-btn').forEach(b => {
-                b.classList.remove('text-yellow-500', 'bg-yellow-500', 'bg-opacity-10');
+                b.classList.remove('text-amber-500', 'bg-amber-500', 'bg-opacity-10');
                 b.classList.add('text-gray-500');
             });
             
@@ -47,7 +50,7 @@
             const activeBtn = document.getElementById('btn-' + viewId);
             if(activeBtn) {
                 activeBtn.classList.remove('text-gray-500');
-                activeBtn.classList.add('text-yellow-500', 'bg-yellow-500', 'bg-opacity-10');
+                activeBtn.classList.add('text-amber-500', 'bg-amber-500', 'bg-opacity-10');
             }
             window.scrollTo({ top: 0, behavior: 'smooth' });
             lucide.createIcons();
@@ -58,45 +61,212 @@
             const display = document.getElementById(displayId);
             if (input.files && input.files[0]) {
                 display.innerText = input.files[0].name;
-                display.classList.add('text-yellow-500');
+                display.classList.add('text-amber-500');
             }
         };
 
         // ===========================
-        // CREDIT DEDUCTION LOGIC
+        // CREDIT ENGINE
         // ===========================
-        async function deductCredits(cost, taskName, buttonId, originalBtnText) {
+        async function deductCredits(cost, btnId, originalText) {
             if(currentCredits < cost) {
                 alert(`❌ Credits खत्म हो गए हैं! आपको ${cost} Credits चाहिए।`);
                 window.switchView('view-wallet');
                 return false;
             }
-            const btn = document.getElementById(buttonId);
-            btn.innerHTML = `Processing...`;
+            const btn = document.getElementById(btnId);
+            btn.innerHTML = `Processing... <i data-lucide="loader-2" class="w-4 h-4 ml-2 animate-spin"></i>`;
             btn.disabled = true;
+            lucide.createIcons();
             
             try {
                 await updateDoc(doc(db, 'users', currentUserEmail), { credits: increment(-cost) });
-                return new Promise((resolve) => {
-                    setTimeout(() => {
-                        alert(`✨ Success! ${taskName} complete (-${cost} Cr).`);
-                        btn.innerHTML = originalBtnText;
-                        btn.disabled = false;
-                        lucide.createIcons();
-                        resolve(true);
-                    }, 2000);
-                });
+                return true;
             } catch(e) {
                 alert("Error: " + e.message);
-                btn.innerHTML = originalBtnText;
+                btn.innerHTML = originalText;
                 btn.disabled = false;
                 lucide.createIcons();
                 return false;
             }
         }
 
+        function restoreButton(btnId, originalText) {
+            const btn = document.getElementById(btnId);
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+            lucide.createIcons();
+        }
+
         // ===========================
-        // AUTH & CORE FEATURES
+        // 1. REAL AI IMAGE (HUGGING FACE)
+        // ===========================
+        window.generateRealImage = async () => {
+            const userPrompt = document.getElementById('img-prompt').value;
+            const resultBox = document.getElementById('image-result-box');
+            const resultImage = document.getElementById('generated-image');
+            const downloadLink = document.getElementById('download-btn');
+            const originalBtnText = `Create Image (-5 Cr) <i data-lucide="sparkles" class="w-4 h-4 ml-2"></i>`;
+
+            if(!userPrompt) { alert("Please type a scene description!"); return; }
+            if(!hfApiKey) { alert("System Error: Hugging Face API Key is missing in Admin Panel."); return; }
+
+            const success = await deductCredits(5, "btn-gen-img", originalBtnText);
+            if(!success) return;
+
+            const finalPrompt = `${userPrompt}, ${baseCharacterPrompt}, highly detailed, 8k resolution, cinematic lighting`;
+
+            try {
+                const response = await fetch(
+                    "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0",
+                    {
+                        headers: { Authorization: `Bearer ${hfApiKey}`, "Content-Type": "application/json" },
+                        method: "POST",
+                        body: JSON.stringify({ inputs: finalPrompt }),
+                    }
+                );
+
+                if (!response.ok) throw new Error("AI Server is busy loading. Try again in 20 seconds.");
+
+                const blob = await response.blob();
+                const imageUrl = URL.createObjectURL(blob);
+                
+                resultImage.src = imageUrl;
+                downloadLink.href = imageUrl;
+                resultBox.classList.remove('hidden');
+                alert("✨ Image Generated Successfully!");
+
+            } catch(error) {
+                alert("AI Error: " + error.message);
+                await updateDoc(doc(db, 'users', currentUserEmail), { credits: increment(5) }); // Refund
+            }
+            restoreButton("btn-gen-img", originalBtnText);
+        };
+
+        // ===========================
+        // 2. REAL AI VOICE (TTS)
+        // ===========================
+        window.generateVoice = async () => {
+            const text = document.getElementById('tts-text').value;
+            const resultBox = document.getElementById('audio-result-box');
+            const audioPlayer = document.getElementById('generated-audio');
+            const originalBtnText = `Generate Voice (-3 Cr)`;
+
+            if(!text) { alert("Please enter script!"); return; }
+            if(!hfApiKey) { alert("System Error: Hugging Face API Key missing."); return; }
+
+            const success = await deductCredits(3, "btn-tts", originalBtnText);
+            if(!success) return;
+
+            try {
+                // Using Facebook's fast Free TTS model on Hugging Face
+                const response = await fetch(
+                    "https://api-inference.huggingface.co/models/espnet/kan-bayashi_ljspeech_vits",
+                    {
+                        headers: { Authorization: `Bearer ${hfApiKey}`, "Content-Type": "application/json" },
+                        method: "POST",
+                        body: JSON.stringify({ inputs: text }),
+                    }
+                );
+
+                if (!response.ok) throw new Error("Voice AI Server is busy loading. Try again in 20 seconds.");
+
+                const blob = await response.blob();
+                const audioUrl = URL.createObjectURL(blob);
+                
+                audioPlayer.src = audioUrl;
+                resultBox.classList.remove('hidden');
+                document.getElementById('tts-text').value = ""; // clear box
+                alert("✨ AI Voice Generated Successfully!");
+
+            } catch(error) {
+                alert("AI Error: " + error.message);
+                await updateDoc(doc(db, 'users', currentUserEmail), { credits: increment(3) }); // Refund
+            }
+            restoreButton("btn-tts", originalBtnText);
+        };
+
+        // ===========================
+        // 3. REEL & LIP SYNC (Long Processing)
+        // ===========================
+        window.generateLipSync = async () => {
+            const video = document.getElementById('reel-video-file').files[0];
+            const audio = document.getElementById('reel-audio-file').files[0];
+            const btn = document.getElementById('btn-gen-reel');
+            const originalText = `Generate Reel (-15 Cr) <i data-lucide="play" class="w-4 h-4 ml-2"></i>`;
+            
+            if(!video || !audio) { alert("Upload BOTH Video and Audio files!"); return; }
+            
+            if(await deductCredits(15, "btn-gen-reel", originalText)) {
+                // Simulate 1 minute wait
+                let time = 60;
+                const timer = setInterval(() => {
+                    btn.innerHTML = `AI Processing... (${time}s) <i data-lucide="loader-2" class="w-4 h-4 ml-2 animate-spin"></i>`;
+                    lucide.createIcons();
+                    time--;
+                    if(time < 0) {
+                        clearInterval(timer);
+                        alert("✨ Reel Animation Processed Successfully! (Mock Complete)");
+                        restoreButton("btn-gen-reel", originalText);
+                        document.getElementById('video-name').innerText = "Upload Base Video";
+                        document.getElementById('audio-name').innerText = "Upload Voice/Audio";
+                    }
+                }, 1000);
+            }
+        };
+
+        // ===========================
+        // 4. FACE SWAP (NEW FEATURE)
+        // ===========================
+        window.generateFaceSwap = async () => {
+            const baseImg = document.getElementById('swap-base-file').files[0];
+            const faceImg = document.getElementById('swap-face-file').files[0];
+            const btn = document.getElementById('btn-face-swap');
+            const originalText = `Swap Face (-10 Cr) <i data-lucide="users" class="w-4 h-4 ml-2"></i>`;
+            
+            if(!baseImg || !faceImg) { alert("Please upload both Target Body and Source Face!"); return; }
+            
+            if(await deductCredits(10, "btn-face-swap", originalText)) {
+                // Simulate 1 minute wait
+                let time = 45;
+                const timer = setInterval(() => {
+                    btn.innerHTML = `Swapping Faces... (${time}s) <i data-lucide="loader-2" class="w-4 h-4 ml-2 animate-spin"></i>`;
+                    lucide.createIcons();
+                    time--;
+                    if(time < 0) {
+                        clearInterval(timer);
+                        alert("✨ Face Swap Completed! (Mock Complete)");
+                        restoreButton("btn-face-swap", originalText);
+                        document.getElementById('swap-base-name').innerText = "Upload Target Body";
+                        document.getElementById('swap-face-name').innerText = "Upload Face Image";
+                    }
+                }, 1000);
+            }
+        };
+
+        // ===========================
+        // OTHER QUICK TOOLS (Script/Tags)
+        // ===========================
+        window.generateScript = async () => {
+            const topic = document.getElementById('script-topic').value;
+            if(!topic) { alert("Enter topic!"); return; }
+            const orig = "Generate (-2 Cr)";
+            if(await deductCredits(2, "btn-script", orig)) {
+                setTimeout(() => { alert("✨ Script Generated! (Simulation)"); restoreButton("btn-script", orig); document.getElementById('script-topic').value = ""; }, 1500);
+            }
+        };
+
+        window.generateTags = async () => {
+            const topic = document.getElementById('tags-topic').value;
+            if(!topic) { alert("Enter keyword!"); return; }
+            const orig = "Generate (-1 Cr)";
+            if(await deductCredits(1, "btn-tags", orig)) {
+                setTimeout(() => { alert("✨ Tags Generated! (Simulation)"); restoreButton("btn-tags", orig); document.getElementById('tags-topic').value = ""; }, 1500);
+            }
+        };
+
+        // ===========================
+        // AUTH & WALLET
         // ===========================
         window.loginUser = async () => {
             const btn = document.getElementById('login-btn');
@@ -108,105 +278,37 @@
                 const snap = await getDoc(userRef);
                 
                 if (!snap.exists()) {
-                    await setDoc(userRef, {
-                        name: user.displayName, email: user.email, 
-                        credits: 20, // Strict 20 Cr
-                        base_character: "yah wala character", createdAt: new Date().toISOString()
-                    });
+                    await setDoc(userRef, { name: user.displayName, email: user.email, credits: 20, createdAt: new Date().toISOString() });
                 }
             } catch (e) { alert("Login Error: " + e.message); btn.innerHTML = "Continue with Google"; }
         };
+        window.logoutUser = () => { if(confirm("Log out?")) signOut(auth); };
 
-        window.logoutUser = () => { if(confirm("Are you sure you want to logout?")) signOut(auth); };
-
-        window.generateImage = async () => {
-            const prompt = document.getElementById('img-prompt').value;
-            if(!prompt) { alert("Please type a description!"); return; }
-            const success = await deductCredits(5, "Image Generation", "btn-gen-img", `Create Image (-5 Cr)`);
-            if(success) document.getElementById('img-prompt').value = "";
-        };
-
-        window.generateLipSync = async () => {
-            const video = document.getElementById('reel-video-file').files[0];
-            const audio = document.getElementById('reel-audio-file').files[0];
-            if(!video || !audio) { alert("Please upload both Video and Audio!"); return; }
-            const success = await deductCredits(15, "Reel & Lip-Sync", "btn-gen-reel", `Generate Reel (-15 Cr)`);
-            if(success) {
-                document.getElementById('video-name').innerText = "Upload Base Video";
-                document.getElementById('audio-name').innerText = "Upload Voice/Audio";
-                document.getElementById('video-name').classList.remove('text-yellow-500');
-                document.getElementById('audio-name').classList.remove('text-yellow-500');
-                document.getElementById('reel-video-file').value = "";
-                document.getElementById('reel-audio-file').value = "";
-            }
-        };
-
-        window.generateVoice = async () => {
-            const text = document.getElementById('tts-text').value;
-            if(!text) { alert("Please enter a script!"); return; }
-            const success = await deductCredits(3, "Voice AI", "btn-tts", `Generate Voice (-3 Cr)`);
-            if(success) document.getElementById('tts-text').value = "";
-        };
-
-        window.generateScript = async () => {
-            const topic = document.getElementById('script-topic').value;
-            if(!topic) { alert("Please enter a topic!"); return; }
-            const success = await deductCredits(2, "Viral Script", "btn-script", `Generate Script (-2 Cr)`);
-            if(success) document.getElementById('script-topic').value = "";
-        };
-
-        window.generateTags = async () => {
-            const topic = document.getElementById('tags-topic').value;
-            if(!topic) { alert("Please enter a keyword!"); return; }
-            const success = await deductCredits(1, "Trending Tags", "btn-tags", `Generate Tags (-1 Cr)`);
-            if(success) document.getElementById('tags-topic').value = "";
-        };
-
-        window.useTool = async (toolType, cost, btnId) => {
-            const img = document.getElementById('tools-img-file').files[0];
-            if(!img) { alert("Please upload an image first!"); return; }
-            const success = await deductCredits(cost, toolType, btnId, toolType);
-            if(success) {
-                document.getElementById('tool-img-name').innerText = "Upload Image for Tools";
-                document.getElementById('tool-img-name').classList.remove('text-yellow-500');
-                document.getElementById('tools-img-file').value = "";
-            }
-        };
-
-        // ===========================
-        // WALLET (UPI)
-        // ===========================
         window.selectPlan = (amount, elementId) => {
             selectedAmount = amount;
             document.querySelectorAll('.plan-card').forEach(c => {
-                c.classList.remove('border-yellow-500', 'bg-yellow-500', 'bg-opacity-10'); 
-                c.classList.add('border-gray-700');
+                c.classList.remove('border-amber-500', 'bg-amber-500', 'bg-opacity-10'); c.classList.add('border-gray-800');
             });
-            document.getElementById(elementId).classList.remove('border-gray-700');
-            document.getElementById(elementId).classList.add('border-yellow-500', 'bg-yellow-500', 'bg-opacity-10');
+            document.getElementById(elementId).classList.remove('border-gray-800');
+            document.getElementById(elementId).classList.add('border-amber-500', 'bg-amber-500', 'bg-opacity-10');
             document.getElementById('pay-amount-display').innerText = "₹" + amount;
         };
 
         window.submitUPI = async () => {
             const utr = document.getElementById('utr-input').value;
             const btn = document.getElementById('btn-submit-upi');
-            if(utr.length < 6) { alert("Invalid Transaction ID!"); return; }
-            btn.innerText = "Sending Request..."; 
-            btn.disabled = true;
+            if(utr.length < 6) { alert("Invalid UTR!"); return; }
+            btn.innerText = "Sending..."; btn.disabled = true;
             try {
-                await addDoc(collection(db, 'upi_requests'), {
-                    userEmail: currentUserEmail, amount: selectedAmount, trxId: utr, status: 'pending', timestamp: new Date().toISOString()
-                });
+                await addDoc(collection(db, 'upi_requests'), { userEmail: currentUserEmail, amount: selectedAmount, trxId: utr, status: 'pending', timestamp: new Date().toISOString() });
                 alert("✅ Request Sent! Admin will verify.");
-                document.getElementById('utr-input').value = ""; 
-                window.switchView('view-dashboard');
+                document.getElementById('utr-input').value = ""; window.switchView('view-dashboard');
             } catch(e) { alert("Error: " + e.message); }
-            btn.innerHTML = "Submit Request"; 
-            btn.disabled = false;
+            btn.innerHTML = "Submit Request"; btn.disabled = false;
         };
 
         // ===========================
-        // LIVE LISTENER
+        // LISTENERS
         // ===========================
         onAuthStateChanged(auth, (user) => {
             if (user) {
@@ -222,6 +324,15 @@
                         document.getElementById('dash-credits').innerText = currentCredits;
                     }
                 });
+
+                onSnapshot(doc(db, 'admin_settings', 'global'), (d) => {
+                    if(d.exists()) {
+                        hfApiKey = d.data().hf_api_key || "";
+                        baseCharacterPrompt = d.data().base_character_prompt || "yah wala character";
+                        document.getElementById('dynamic-prompt-display').innerText = `"${baseCharacterPrompt}"`;
+                    }
+                });
+
                 lucide.createIcons();
             } else {
                 document.getElementById('auth-screen').classList.remove('hidden');
@@ -233,37 +344,26 @@
     <style>
         body { background-color: #050505; color: #ffffff; font-family: sans-serif; overflow-x: hidden; -webkit-tap-highlight-color: transparent; }
         .hidden { display: none !important; }
-        .glass { background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 1.5rem; }
+        .glass { background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 1.5rem; }
         .amber-gradient { background: linear-gradient(135deg, #f59e0b, #d97706); }
-        .app-container { padding-bottom: 8rem; } /* Pura space neechay taaki nav bar par kuch na chadhe */
+        .app-container { padding-bottom: 8rem; } 
         
-        /* Fixed Inputs */
         input[type="text"], input[type="number"], textarea, select { 
-            background-color: rgba(0,0,0,0.6) !important; 
-            color: white !important; 
-            outline: none; 
-            border: 1px solid rgba(255,255,255,0.2); 
-            border-radius: 1rem;
-            padding: 1rem;
-            width: 100%;
+            background-color: rgba(0,0,0,0.6) !important; color: white !important; outline: none; border: 1px solid rgba(255,255,255,0.2); border-radius: 1rem; padding: 1rem; width: 100%;
         }
         input:focus, textarea:focus, select:focus { border-color: #f59e0b; }
         
-        /* Direct Upload Fix */
-        .file-upload-box { position: relative; overflow: hidden; border: 2px dashed rgba(255,255,255,0.2); border-radius: 1rem; padding: 1.5rem; text-align: center; background: rgba(0,0,0,0.4); }
+        .file-upload-box { position: relative; overflow: hidden; border: 2px dashed rgba(255,255,255,0.2); border-radius: 1rem; padding: 1rem; text-align: center; background: rgba(0,0,0,0.4); }
         .file-upload-input { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; z-index: 10; }
         
-        /* Fixed Navs */
         .header-fixed { position: sticky; top: 0; z-index: 80; background: rgba(5,5,5,0.95); border-bottom: 1px solid rgba(255,255,255,0.1); }
         .bottom-nav { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%); width: 92%; max-width: 28rem; z-index: 99; border-radius: 2rem; }
         .auth-screen { z-index: 100; position: fixed; inset: 0; background-color: #050505; }
-        
-        /* Animation */
         .fade-in { animation: fadeIn 0.4s ease-in-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
-<body class="selection:bg-yellow-500 selection:text-black">
+<body class="selection:bg-amber-500 selection:text-black">
 
     <div id="auth-screen" class="auth-screen flex flex-col items-center justify-center p-8 text-center">
         <div class="w-24 h-24 amber-gradient rounded-3xl flex items-center justify-center mx-auto mb-8">
@@ -283,81 +383,111 @@
                 <div class="w-10 h-10 bg-gray-900 rounded-full flex items-center justify-center border border-gray-700">
                     <i data-lucide="user" class="w-5 h-5 text-gray-400"></i>
                 </div>
-                <h2 class="text-lg font-bold">Hi, <span id="u-name" class="text-yellow-500">User</span></h2>
+                <h2 class="text-lg font-bold">Hi, <span id="u-name" class="text-amber-500">User</span></h2>
             </div>
             
-            <div class="bg-yellow-500 bg-opacity-10 border border-yellow-500 border-opacity-30 px-4 py-2 rounded-xl flex items-center gap-2">
-                <i data-lucide="coins" class="w-4 h-4 text-yellow-500"></i>
-                <span class="text-yellow-500 font-black text-sm"><span id="header-credits">0</span> Cr</span>
+            <div class="bg-amber-500 bg-opacity-10 border border-amber-500 border-opacity-30 px-4 py-2 rounded-xl flex items-center gap-2">
+                <i data-lucide="coins" class="w-4 h-4 text-amber-500"></i>
+                <span class="text-amber-500 font-black text-sm"><span id="header-credits">0</span> Cr</span>
             </div>
         </header>
 
         <div class="p-5 max-w-md mx-auto space-y-6">
             
             <div id="view-dashboard" class="view-section fade-in space-y-5">
-                <div class="amber-gradient p-6 rounded-3xl text-black">
+                <div class="amber-gradient p-6 rounded-3xl text-black shadow-[0_10px_30px_rgba(245,158,11,0.2)]">
                     <p class="text-black text-opacity-70 text-xs font-extrabold uppercase mb-1">Live Wallet Balance</p>
                     <h2 class="text-5xl font-black" id="dash-credits">0</h2>
                 </div>
-                <div class="glass p-5 flex items-center gap-4">
-                    <div class="w-12 h-12 bg-gray-800 rounded-xl flex items-center justify-center border border-gray-700">
-                        <i data-lucide="scan-face" class="text-yellow-500 w-6 h-6"></i>
+                <div class="glass p-5 flex items-center gap-4 border-l-4 border-amber-500">
+                    <div class="w-12 h-12 bg-gray-800 rounded-xl flex items-center justify-center">
+                        <i data-lucide="scan-face" class="text-amber-500 w-6 h-6"></i>
                     </div>
                     <div>
-                        <p class="text-xs text-gray-400 uppercase font-bold">Face-Lock Active</p>
-                        <p class="font-mono text-yellow-500 font-bold">"yah wala character"</p>
+                        <p class="text-xs text-gray-400 uppercase font-bold">Active Face-Lock</p>
+                        <p class="font-mono text-amber-500 font-bold" id="dynamic-prompt-display">"Loading..."</p>
                     </div>
                 </div>
             </div>
 
             <div id="view-image" class="view-section hidden fade-in">
                  <div class="glass p-6">
-                    <h3 class="font-bold text-xl mb-4 flex items-center gap-2"><i data-lucide="image" class="text-yellow-500 w-5 h-5"></i> Image Studio</h3>
-                    <textarea id="img-prompt" class="mb-4 resize-none" rows="4" placeholder="Describe scene for 'yah wala character'..."></textarea>
-                    <button id="btn-gen-img" onclick="window.generateImage()" class="w-full amber-gradient text-black font-black py-4 rounded-2xl active:scale-95 transition-all flex justify-center items-center gap-2">
+                    <h3 class="font-bold text-xl mb-4 flex items-center gap-2"><i data-lucide="image" class="text-amber-500 w-5 h-5"></i> Image Studio</h3>
+                    <textarea id="img-prompt" class="mb-4 resize-none" rows="4" placeholder="Describe scene... (e.g. drinking coffee in neon city)"></textarea>
+                    
+                    <button id="btn-gen-img" onclick="window.generateRealImage()" class="w-full amber-gradient text-black font-black py-4 rounded-2xl active:scale-95 transition-all flex justify-center items-center gap-2">
                         Create Image (-5 Cr) <i data-lucide="sparkles" class="w-4 h-4"></i>
                     </button>
+
+                    <div id="image-result-box" class="hidden mt-6 p-4 bg-gray-900 border border-amber-500 border-opacity-30 rounded-2xl text-center fade-in">
+                        <img id="generated-image" src="" class="w-full rounded-xl mb-4 shadow-lg">
+                        <a id="download-btn" href="#" download="AI_Studio_Image.jpg" class="w-full bg-white text-black font-bold py-3 rounded-xl flex justify-center items-center gap-2">
+                            <i data-lucide="download" class="w-4 h-4"></i> Download Image
+                        </a>
+                    </div>
                 </div>
             </div>
 
-             <div id="view-reels" class="view-section hidden fade-in">
+             <div id="view-reels" class="view-section hidden fade-in space-y-6">
                 <div class="glass p-6">
-                     <h3 class="font-bold text-xl mb-4 flex items-center gap-2"><i data-lucide="video" class="text-yellow-500 w-5 h-5"></i> Reel & Lip-Sync</h3>
+                     <h3 class="font-bold text-xl mb-1 flex items-center gap-2"><i data-lucide="video" class="text-amber-500 w-5 h-5"></i> Reel Lip-Sync</h3>
+                     <p class="text-[10px] text-gray-400 mb-4 font-bold tracking-widest uppercase"><i data-lucide="alert-circle" class="w-3 h-3 inline text-yellow-500"></i> Note: Takes 1-2 mins to process</p>
                      
-                     <div class="file-upload-box mb-4">
+                     <div class="file-upload-box mb-3">
                          <input type="file" id="reel-video-file" accept="video/*" class="file-upload-input" onchange="window.updateFileName('reel-video-file', 'video-name')">
-                         <i data-lucide="upload-cloud" class="w-6 h-6 text-gray-400 mx-auto mb-2"></i>
-                         <p class="text-sm font-bold truncate" id="video-name">Upload Base Video</p>
+                         <i data-lucide="upload-cloud" class="w-5 h-5 text-gray-400 mx-auto mb-1"></i>
+                         <p class="text-xs font-bold truncate" id="video-name">Upload Base Video</p>
                      </div>
-
-                     <div class="file-upload-box mb-6">
+                     <div class="file-upload-box mb-4">
                          <input type="file" id="reel-audio-file" accept="audio/*" class="file-upload-input" onchange="window.updateFileName('reel-audio-file', 'audio-name')">
-                         <i data-lucide="mic" class="w-6 h-6 text-gray-400 mx-auto mb-2"></i>
-                         <p class="text-sm font-bold truncate" id="audio-name">Upload Voice/Audio</p>
+                         <i data-lucide="mic" class="w-5 h-5 text-gray-400 mx-auto mb-1"></i>
+                         <p class="text-xs font-bold truncate" id="audio-name">Upload Voice/Audio</p>
                      </div>
-
-                     <button id="btn-gen-reel" onclick="window.generateLipSync()" class="w-full bg-gray-800 text-white font-bold py-4 rounded-2xl border border-gray-700 active:scale-95 transition-all flex justify-center items-center gap-2">
+                     <button id="btn-gen-reel" onclick="window.generateLipSync()" class="w-full bg-gray-800 hover:bg-gray-700 text-white font-bold py-4 rounded-2xl active:scale-95 transition-all flex justify-center items-center gap-2 border border-gray-700">
                         Generate Reel (-15 Cr) <i data-lucide="play" class="w-4 h-4"></i>
+                    </button>
+                </div>
+
+                <div class="glass p-6 border border-indigo-500 border-opacity-30">
+                     <h3 class="font-bold text-xl mb-1 flex items-center gap-2"><i data-lucide="users" class="text-indigo-400 w-5 h-5"></i> AI Face Swap</h3>
+                     <p class="text-[10px] text-gray-400 mb-4 font-bold tracking-widest uppercase"><i data-lucide="alert-circle" class="w-3 h-3 inline text-yellow-500"></i> Note: Takes ~45s to process</p>
+                     
+                     <div class="flex gap-3 mb-4">
+                         <div class="file-upload-box flex-1">
+                             <input type="file" id="swap-base-file" accept="image/*" class="file-upload-input" onchange="window.updateFileName('swap-base-file', 'swap-base-name')">
+                             <i data-lucide="user" class="w-4 h-4 text-gray-400 mx-auto mb-1"></i>
+                             <p class="text-[10px] font-bold truncate" id="swap-base-name">Target Body</p>
+                         </div>
+                         <div class="file-upload-box flex-1">
+                             <input type="file" id="swap-face-file" accept="image/*" class="file-upload-input" onchange="window.updateFileName('swap-face-file', 'swap-face-name')">
+                             <i data-lucide="smile" class="w-4 h-4 text-indigo-400 mx-auto mb-1"></i>
+                             <p class="text-[10px] font-bold truncate text-indigo-400" id="swap-face-name">Source Face</p>
+                         </div>
+                     </div>
+                     
+                     <button id="btn-face-swap" onclick="window.generateFaceSwap()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-4 rounded-2xl active:scale-95 transition-all flex justify-center items-center gap-2 border border-indigo-500">
+                        Swap Face (-10 Cr) <i data-lucide="users" class="w-4 h-4"></i>
                     </button>
                 </div>
             </div>
 
              <div id="view-tools" class="view-section hidden fade-in space-y-4">
                  
-                 <div class="glass p-5">
+                 <div class="glass p-5 border border-green-500 border-opacity-20">
                     <h4 class="font-bold mb-3 text-sm flex items-center gap-2"><i data-lucide="volume-2" class="text-green-400 w-4 h-4"></i> Text-to-Voice AI</h4>
-                    <textarea id="tts-text" class="mb-3 resize-none" rows="2" placeholder="Apni script yaha type karein..."></textarea>
-                    <select class="mb-3 text-sm">
-                        <option>Male Voice (Deep)</option>
-                        <option>Female Voice (Soft)</option>
-                        <option>Alien / Custom Voice</option>
-                    </select>
-                    <button id="btn-tts" onclick="window.generateVoice()" class="w-full bg-gray-800 text-white font-bold py-3 rounded-xl border border-gray-700 active:scale-95 text-sm">Generate Voice (-3 Cr)</button>
+                    <textarea id="tts-text" class="mb-3 resize-none" rows="2" placeholder="Script type karein..."></textarea>
+                    
+                    <button id="btn-tts" onclick="window.generateVoice()" class="w-full bg-green-500 bg-opacity-20 text-green-400 font-bold py-3 rounded-xl border border-green-500 border-opacity-30 active:scale-95 text-sm">Generate Voice (-3 Cr)</button>
+                    
+                    <div id="audio-result-box" class="hidden mt-4 bg-black p-3 rounded-xl border border-gray-800">
+                        <p class="text-[10px] text-gray-500 uppercase font-bold mb-2">Generated Audio:</p>
+                        <audio id="generated-audio" controls class="w-full h-8"></audio>
+                    </div>
                 </div>
                  
                  <div class="grid grid-cols-2 gap-3">
                      <div class="glass p-4">
-                         <h4 class="font-bold mb-2 text-xs flex items-center gap-2"><i data-lucide="pen-tool" class="text-yellow-500 w-3 h-3"></i> Viral Script</h4>
+                         <h4 class="font-bold mb-2 text-xs flex items-center gap-2"><i data-lucide="pen-tool" class="text-amber-500 w-3 h-3"></i> Viral Script</h4>
                          <input type="text" id="script-topic" class="mb-3 text-xs" placeholder="Topic name...">
                          <button id="btn-script" onclick="window.generateScript()" class="w-full bg-gray-800 text-white font-bold py-2 rounded-xl border border-gray-700 active:scale-95 text-xs">Generate (-2 Cr)</button>
                      </div>
@@ -367,36 +497,19 @@
                          <button id="btn-tags" onclick="window.generateTags()" class="w-full bg-gray-800 text-white font-bold py-2 rounded-xl border border-gray-700 active:scale-95 text-xs">Generate (-1 Cr)</button>
                      </div>
                  </div>
-
-                 <div class="glass p-5">
-                     <h4 class="font-bold mb-3 text-sm flex items-center gap-2"><i data-lucide="layers" class="text-purple-400 w-4 h-4"></i> Enhance Image</h4>
-                     <div class="file-upload-box mb-4">
-                         <input type="file" id="tools-img-file" accept="image/*" class="file-upload-input" onchange="window.updateFileName('tools-img-file', 'tool-img-name')">
-                         <i data-lucide="image-plus" class="text-yellow-500 w-5 h-5 mx-auto mb-1"></i>
-                         <p class="text-xs font-bold truncate" id="tool-img-name">Upload Image for Tools</p>
-                     </div>
-                     <div class="grid grid-cols-2 gap-2">
-                         <button id="btn-upscale" onclick="window.useTool('4K Upscale', 2, 'btn-upscale')" class="bg-gray-800 p-3 rounded-xl border border-gray-700 active:scale-95 text-center">
-                             <p class="font-bold text-xs text-blue-400">4K Upscale</p><p class="text-[10px] text-gray-400">-2 Cr</p>
-                         </button>
-                         <button id="btn-bgrm" onclick="window.useTool('BG Remove', 1, 'btn-bgrm')" class="bg-gray-800 p-3 rounded-xl border border-gray-700 active:scale-95 text-center">
-                             <p class="font-bold text-xs text-purple-400">BG Remove</p><p class="text-[10px] text-gray-400">-1 Cr</p>
-                         </button>
-                     </div>
-                 </div>
             </div>
 
             <div id="view-wallet" class="view-section hidden fade-in">
                 <div class="glass p-6">
-                    <h3 class="font-black text-xl mb-4 flex items-center gap-2"><i data-lucide="wallet" class="text-yellow-500 w-5 h-5"></i> Add Funds</h3>
+                    <h3 class="font-black text-xl mb-4 flex items-center gap-2"><i data-lucide="wallet" class="text-amber-500 w-5 h-5"></i> Add Funds</h3>
                     <div class="grid grid-cols-3 gap-2 mb-6">
-                        <div id="plan-49" onclick="window.selectPlan('49', 'plan-49')" class="plan-card glass border-gray-700 p-3 text-center cursor-pointer">
+                        <div id="plan-49" onclick="window.selectPlan('49', 'plan-49')" class="plan-card glass border-gray-800 p-3 text-center cursor-pointer">
                             <h4 class="font-black">₹49</h4><p class="text-[10px] text-gray-400">100 Cr</p>
                         </div>
-                        <div id="plan-149" onclick="window.selectPlan('149', 'plan-149')" class="plan-card glass border-yellow-500 bg-yellow-500 bg-opacity-10 p-3 text-center cursor-pointer">
-                            <h4 class="font-black">₹149</h4><p class="text-[10px] text-yellow-500">500 Cr</p>
+                        <div id="plan-149" onclick="window.selectPlan('149', 'plan-149')" class="plan-card glass border-amber-500 bg-amber-500 bg-opacity-10 p-3 text-center cursor-pointer">
+                            <h4 class="font-black">₹149</h4><p class="text-[10px] text-amber-500">500 Cr</p>
                         </div>
-                        <div id="plan-499" onclick="window.selectPlan('499', 'plan-499')" class="plan-card glass border-gray-700 p-3 text-center cursor-pointer">
+                        <div id="plan-499" onclick="window.selectPlan('499', 'plan-499')" class="plan-card glass border-gray-800 p-3 text-center cursor-pointer">
                             <h4 class="font-black">₹499</h4><p class="text-[10px] text-gray-400">2k Cr</p>
                         </div>
                     </div>
@@ -410,19 +523,17 @@
             </div>
         </div>
 
-        <nav class="bottom-nav glass flex items-center justify-evenly px-2 shadow-2xl bg-black bg-opacity-90">
-            <button id="btn-view-dashboard" onclick="window.switchView('view-dashboard')" class="nav-btn text-yellow-500 bg-yellow-500 bg-opacity-10 w-12 h-12 rounded-full flex items-center justify-center"><i data-lucide="layout-grid" class="w-5 h-5"></i></button>
+        <nav class="bottom-nav glass flex items-center justify-evenly px-2 bg-black bg-opacity-95 shadow-[0_20px_50px_rgba(0,0,0,0.9)]">
+            <button id="btn-view-dashboard" onclick="window.switchView('view-dashboard')" class="nav-btn text-amber-500 bg-amber-500 bg-opacity-10 w-12 h-12 rounded-full flex items-center justify-center"><i data-lucide="layout-grid" class="w-5 h-5"></i></button>
             <button id="btn-view-image" onclick="window.switchView('view-image')" class="nav-btn text-gray-500 w-12 h-12 rounded-full flex items-center justify-center"><i data-lucide="image" class="w-5 h-5"></i></button>
             <button id="btn-view-reels" onclick="window.switchView('view-reels')" class="nav-btn text-gray-500 w-12 h-12 rounded-full flex items-center justify-center"><i data-lucide="clapperboard" class="w-5 h-5"></i></button>
             <button id="btn-view-tools" onclick="window.switchView('view-tools')" class="nav-btn text-gray-500 w-12 h-12 rounded-full flex items-center justify-center"><i data-lucide="wand-2" class="w-5 h-5"></i></button>
             <button id="btn-view-wallet" onclick="window.switchView('view-wallet')" class="nav-btn text-gray-500 w-12 h-12 rounded-full flex items-center justify-center"><i data-lucide="wallet" class="w-5 h-5"></i></button>
-            <div class="w-px h-6 bg-gray-700"></div>
+            <div class="w-px h-6 bg-gray-800"></div>
             <button onclick="window.logoutUser()" class="text-red-500 hover:text-red-400 w-10 h-10 flex items-center justify-center"><i data-lucide="log-out" class="w-5 h-5"></i></button>
         </nav>
     </div>
 
-    <script>
-        window.addEventListener('load', () => lucide.createIcons());
-    </script>
+    <script>window.addEventListener('load', () => lucide.createIcons());</script>
 </body>
 </html>
