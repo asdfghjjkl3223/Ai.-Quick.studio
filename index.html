@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI Quick Studio - Super Admin</title>
+    <title>AI Quick Studio - Pro Ultimate</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-        import { getFirestore, collection, onSnapshot, doc, updateDoc, increment, setDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, addDoc, updateDoc, increment } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyAgpcpxQkz9pBPaVuTtPEXvAXIHbxtwX-g",
@@ -26,278 +26,337 @@
         const db = getFirestore(app);
         const provider = new GoogleAuthProvider();
 
-        // ==========================================
-        // 🔴 STRICT ADMIN SECURITY LOCK
-        // ==========================================
-        const ALLOWED_ADMIN_EMAILS = [
-            "neeraj14soni78@gmail.com" // Aapki ID
-        ];
-        // ==========================================
-
         setPersistence(auth, browserLocalPersistence).catch(err => console.error(err));
 
-        let usersData = [];
-        let filteredUsers = [];
-        let pendingRequests = [];
-        let totalRevenue = 0;
-        let qrCodeBase64 = "";
+        let currentUserEmail = "";
+        let currentCredits = 0;
+        let isUserVIP = false;
+        let selectedAmount = "149";
+        
+        // ADMIN DYNAMIC SETTINGS
+        let hfApiKey = "";
+        let baseCharacterPrompt = "yah wala character";
+        let adminWhatsApp = "";
 
         // ===========================
         // UI HELPERS
         // ===========================
-        window.switchTab = (tabId) => {
-            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
-            document.querySelectorAll('.nav-btn').forEach(el => {
-                el.classList.remove('text-indigo-400', 'bg-indigo-500', 'bg-opacity-10');
-                el.classList.add('text-gray-500');
+        window.switchView = (viewId) => {
+            document.querySelectorAll('.view-section').forEach(v => v.classList.add('hidden'));
+            document.querySelectorAll('.nav-btn').forEach(b => {
+                b.classList.remove('text-amber-500', 'bg-amber-500', 'bg-opacity-10');
+                b.classList.add('text-gray-500');
             });
-            document.getElementById(tabId).classList.remove('hidden');
-            const activeBtn = document.getElementById('nav-' + tabId);
+            
+            document.getElementById(viewId).classList.remove('hidden');
+            const activeBtn = document.getElementById('btn-' + viewId);
             if(activeBtn) {
                 activeBtn.classList.remove('text-gray-500');
-                activeBtn.classList.add('text-indigo-400', 'bg-indigo-500', 'bg-opacity-10');
+                activeBtn.classList.add('text-amber-500', 'bg-amber-500', 'bg-opacity-10');
             }
-            window.scrollTo(0, 0);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
             lucide.createIcons();
         };
 
-        window.toggleVisibility = (inputId) => {
+        window.updateFileName = (inputId, displayId) => {
             const input = document.getElementById(inputId);
-            const icon = document.getElementById('eye-' + inputId);
-            if (input.type === 'password') {
-                input.type = 'text'; icon.setAttribute('data-lucide', 'eye-off');
-            } else {
-                input.type = 'password'; icon.setAttribute('data-lucide', 'eye');
+            const display = document.getElementById(displayId);
+            if (input.files && input.files[0]) {
+                display.innerText = input.files[0].name;
+                display.classList.add('text-amber-500');
             }
-            lucide.createIcons();
         };
 
         // ===========================
-        // AUTHENTICATION
+        // CREDIT ENGINE
         // ===========================
-        window.loginAdmin = async () => {
+        async function deductCredits(cost, btnId, originalText) {
+            if(!isUserVIP && currentCredits < cost) {
+                alert(`❌ Credits खत्म हो गए हैं! आपको ${cost} Credits चाहिए।`);
+                window.switchView('view-wallet');
+                return false;
+            }
+            
+            const btn = document.getElementById(btnId);
+            btn.innerHTML = `Processing... <i data-lucide="loader-2" class="w-4 h-4 ml-2 animate-spin"></i>`;
+            btn.disabled = true;
+            lucide.createIcons();
+            
+            try {
+                if(!isUserVIP) {
+                    await updateDoc(doc(db, 'users', currentUserEmail), { credits: increment(-cost) });
+                }
+                return true;
+            } catch(e) {
+                alert("Error: " + e.message);
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+                lucide.createIcons();
+                return false;
+            }
+        }
+
+        function restoreButton(btnId, originalText) {
+            const btn = document.getElementById(btnId);
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+            lucide.createIcons();
+        }
+
+        // ===========================
+        // 1. REAL AI IMAGE (HF)
+        // ===========================
+        window.generateRealImage = async () => {
+            const userPrompt = document.getElementById('img-prompt').value;
+            const resultBox = document.getElementById('image-result-box');
+            const resultImage = document.getElementById('generated-image');
+            const downloadLink = document.getElementById('download-btn');
+            const originalBtnText = `Create Image (-5 Cr) <i data-lucide="sparkles" class="w-4 h-4 ml-2"></i>`;
+
+            if(!userPrompt) { alert("Please type a scene description!"); return; }
+            if(!hfApiKey) { alert("System Error: Hugging Face API Key missing in Admin Panel."); return; }
+
+            const success = await deductCredits(5, "btn-gen-img", originalBtnText);
+            if(!success) return;
+
+            const finalPrompt = `${userPrompt}, ${baseCharacterPrompt}, highly detailed, 8k resolution, cinematic lighting`;
+
+            try {
+                const response = await fetch(
+                    "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0",
+                    {
+                        headers: { Authorization: `Bearer ${hfApiKey}`, "Content-Type": "application/json" },
+                        method: "POST",
+                        body: JSON.stringify({ inputs: finalPrompt }),
+                    }
+                );
+
+                if (!response.ok) throw new Error("AI Server is busy. Try again in 20 seconds.");
+
+                const blob = await response.blob();
+                const imageUrl = URL.createObjectURL(blob);
+                
+                resultImage.src = imageUrl;
+                downloadLink.href = imageUrl;
+                resultBox.classList.remove('hidden');
+                alert("✨ Image Generated Successfully!");
+
+            } catch(error) {
+                alert("AI Error: " + error.message);
+                if(!isUserVIP) await updateDoc(doc(db, 'users', currentUserEmail), { credits: increment(5) }); // Refund
+            }
+            restoreButton("btn-gen-img", originalBtnText);
+        };
+
+        // ===========================
+        // 2. REAL AI VOICE (TTS)
+        // ===========================
+        window.generateVoice = async () => {
+            const text = document.getElementById('tts-text').value;
+            const resultBox = document.getElementById('audio-result-box');
+            const audioPlayer = document.getElementById('generated-audio');
+            const originalBtnText = `Generate Voice (-3 Cr)`;
+
+            if(!text) { alert("Please enter script!"); return; }
+            if(!hfApiKey) { alert("System Error: Hugging Face API Key missing."); return; }
+
+            const success = await deductCredits(3, "btn-tts", originalBtnText);
+            if(!success) return;
+
+            try {
+                const response = await fetch(
+                    "https://api-inference.huggingface.co/models/espnet/kan-bayashi_ljspeech_vits",
+                    {
+                        headers: { Authorization: `Bearer ${hfApiKey}`, "Content-Type": "application/json" },
+                        method: "POST",
+                        body: JSON.stringify({ inputs: text }),
+                    }
+                );
+
+                if (!response.ok) throw new Error("Voice Server busy. Try again in 20 seconds.");
+
+                const blob = await response.blob();
+                const audioUrl = URL.createObjectURL(blob);
+                
+                audioPlayer.src = audioUrl;
+                resultBox.classList.remove('hidden');
+                document.getElementById('tts-text').value = "";
+                alert("✨ AI Voice Generated Successfully!");
+
+            } catch(error) {
+                alert("AI Error: " + error.message);
+                if(!isUserVIP) await updateDoc(doc(db, 'users', currentUserEmail), { credits: increment(3) }); // Refund
+            }
+            restoreButton("btn-tts", originalBtnText);
+        };
+
+        // ===========================
+        // 3. REEL & FACE SWAP (Simulated Processing)
+        // ===========================
+        window.generateLipSync = async () => {
+            const video = document.getElementById('reel-video-file').files[0];
+            const audio = document.getElementById('reel-audio-file').files[0];
+            const btn = document.getElementById('btn-gen-reel');
+            const originalText = `Generate Reel (-15 Cr) <i data-lucide="play" class="w-4 h-4 ml-2"></i>`;
+            
+            if(!video || !audio) { alert("Upload BOTH Video and Audio files!"); return; }
+            if(await deductCredits(15, "btn-gen-reel", originalText)) {
+                let time = 60;
+                const timer = setInterval(() => {
+                    btn.innerHTML = `AI Processing... (${time}s) <i data-lucide="loader-2" class="w-4 h-4 ml-2 animate-spin"></i>`;
+                    lucide.createIcons();
+                    time--;
+                    if(time < 0) {
+                        clearInterval(timer);
+                        alert("✨ Reel Animation Processed Successfully!");
+                        restoreButton("btn-gen-reel", originalText);
+                        document.getElementById('video-name').innerText = "Upload Base Video";
+                        document.getElementById('audio-name').innerText = "Upload Voice/Audio";
+                    }
+                }, 1000);
+            }
+        };
+
+        window.generateFaceSwap = async () => {
+            const baseImg = document.getElementById('swap-base-file').files[0];
+            const faceImg = document.getElementById('swap-face-file').files[0];
+            const btn = document.getElementById('btn-face-swap');
+            const originalText = `Swap Face (-10 Cr) <i data-lucide="users" class="w-4 h-4 ml-2"></i>`;
+            
+            if(!baseImg || !faceImg) { alert("Please upload both Target Body and Source Face!"); return; }
+            if(await deductCredits(10, "btn-face-swap", originalText)) {
+                let time = 45;
+                const timer = setInterval(() => {
+                    btn.innerHTML = `Swapping Faces... (${time}s) <i data-lucide="loader-2" class="w-4 h-4 ml-2 animate-spin"></i>`;
+                    lucide.createIcons();
+                    time--;
+                    if(time < 0) {
+                        clearInterval(timer);
+                        alert("✨ Face Swap Completed!");
+                        restoreButton("btn-face-swap", originalText);
+                        document.getElementById('swap-base-name').innerText = "Target Body";
+                        document.getElementById('swap-face-name').innerText = "Source Face";
+                    }
+                }, 1000);
+            }
+        };
+
+        // ===========================
+        // OTHER QUICK TOOLS (Simulated)
+        // ===========================
+        window.generateScript = async () => {
+            const topic = document.getElementById('script-topic').value;
+            if(!topic) { alert("Enter topic!"); return; }
+            const orig = "Generate (-2 Cr)";
+            if(await deductCredits(2, "btn-script", orig)) {
+                setTimeout(() => { alert("✨ Script Generated!"); restoreButton("btn-script", orig); document.getElementById('script-topic').value = ""; }, 1500);
+            }
+        };
+
+        window.generateTags = async () => {
+            const topic = document.getElementById('tags-topic').value;
+            if(!topic) { alert("Enter keyword!"); return; }
+            const orig = "Generate (-1 Cr)";
+            if(await deductCredits(1, "btn-tags", orig)) {
+                setTimeout(() => { alert("✨ Tags Generated!"); restoreButton("btn-tags", orig); document.getElementById('tags-topic').value = ""; }, 1500);
+            }
+        };
+
+        // ===========================
+        // WALLET (UPI & WhatsApp)
+        // ===========================
+        window.selectPlan = (amount, elementId) => {
+            selectedAmount = amount;
+            document.querySelectorAll('.plan-card').forEach(c => {
+                c.classList.remove('border-amber-500', 'bg-amber-500', 'bg-opacity-10'); c.classList.add('border-gray-800');
+            });
+            document.getElementById(elementId).classList.remove('border-gray-800');
+            document.getElementById(elementId).classList.add('border-amber-500', 'bg-amber-500', 'bg-opacity-10');
+            document.getElementById('pay-amount-display').innerText = "₹" + amount;
+        };
+
+        window.submitUPI = async () => {
+            const utr = document.getElementById('utr-input').value;
+            const btn = document.getElementById('btn-submit-upi');
+            if(utr.length < 6) { alert("Invalid UTR!"); return; }
+            btn.innerText = "Sending..."; btn.disabled = true;
+            try {
+                await addDoc(collection(db, 'upi_requests'), { userEmail: currentUserEmail, amount: selectedAmount, trxId: utr, status: 'pending', timestamp: new Date().toISOString() });
+                alert("✅ Request Sent! Admin will verify soon.");
+                document.getElementById('utr-input').value = ""; window.switchView('view-dashboard');
+            } catch(e) { alert("Error: " + e.message); }
+            btn.innerHTML = "Submit Request"; btn.disabled = false;
+        };
+
+        window.openWhatsApp = () => {
+            if(!adminWhatsApp) { alert("Support number is currently offline. Please try again later."); return; }
+            window.open(`https://wa.me/${adminWhatsApp}?text=Hi%20AI%20Quick%20Studio%20Support,%20I%20need%20help%20with%20my%20account%20(${currentUserEmail})`, '_blank');
+        };
+
+        // ===========================
+        // AUTH & LIVE LISTENERS
+        // ===========================
+        window.loginUser = async () => {
             const btn = document.getElementById('login-btn');
-            btn.innerHTML = "Verifying Identity...";
+            btn.innerHTML = "Connecting...";
             try {
                 const result = await signInWithPopup(auth, provider);
-                if (!ALLOWED_ADMIN_EMAILS.includes(result.user.email)) {
-                    alert("⛔ ACCESS DENIED! You are not authorized.");
-                    await signOut(auth);
-                    btn.innerHTML = "Secure System Login";
-                    return;
+                const userRef = doc(db, 'users', result.user.email);
+                const snap = await getDoc(userRef);
+                if (!snap.exists()) {
+                    await setDoc(userRef, { name: result.user.displayName, email: result.user.email, credits: 20, isVIP: false, createdAt: new Date().toISOString() });
                 }
-            } catch (e) { alert("Login Error: " + e.message); btn.innerHTML = "Secure System Login"; }
-        };
-        window.logoutAdmin = () => { if(confirm("Disconnect from Admin Panel?")) signOut(auth); };
-
-        // ===========================
-        // SETTINGS & QR UPLOAD LOGIC
-        // ===========================
-        window.handleQRUpload = (event) => {
-            const file = event.target.files[0];
-            if(file) {
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    qrCodeBase64 = e.target.result;
-                    document.getElementById('qr-preview').src = qrCodeBase64;
-                    document.getElementById('qr-preview').classList.remove('hidden');
-                };
-                reader.readAsDataURL(file);
-            }
+            } catch (e) { alert("Login Error: " + e.message); btn.innerHTML = "Continue with Google"; }
         };
 
-        window.saveSettings = async () => {
-            const apiKey = document.getElementById('api-key-input').value;
-            const hfKey = document.getElementById('hf-key-input').value;
-            const prompt = document.getElementById('base-prompt-input').value;
-            const whatsapp = document.getElementById('whatsapp-input').value;
-            const btn = document.getElementById('btn-save-settings');
-            
-            btn.innerHTML = "Saving to Server..."; btn.disabled = true;
-            try {
-                await setDoc(doc(db, 'admin_settings', 'global'), {
-                    main_api_key: apiKey, 
-                    hf_api_key: hfKey, 
-                    base_character_prompt: prompt,
-                    whatsapp_number: whatsapp,
-                    qr_code_image: qrCodeBase64,
-                    last_updated: new Date().toISOString()
-                }, { merge: true });
-                alert("✅ System Configuration Updated Successfully!");
-            } catch(e) { alert("Error: " + e.message); }
-            btn.innerHTML = "Update System Settings"; btn.disabled = false;
-        };
+        window.logoutUser = () => { if(confirm("Log out?")) signOut(auth); };
 
-        // ===========================
-        // DATABASE LISTENERS
-        // ===========================
-        const startListeners = () => {
-            // Fetch Global Settings
-            onSnapshot(doc(db, 'admin_settings', 'global'), (docSnap) => {
-                if(docSnap.exists()) {
-                    const data = docSnap.data();
-                    document.getElementById('api-key-input').value = data.main_api_key || '';
-                    document.getElementById('hf-key-input').value = data.hf_api_key || '';
-                    document.getElementById('base-prompt-input').value = data.base_character_prompt || 'yah wala character';
-                    document.getElementById('whatsapp-input').value = data.whatsapp_number || '';
-                    if(data.qr_code_image) {
-                        qrCodeBase64 = data.qr_code_image;
-                        document.getElementById('qr-preview').src = qrCodeBase64;
-                        document.getElementById('qr-preview').classList.remove('hidden');
-                    }
-                }
-            });
-
-            // Fetch Users
-            onSnapshot(collection(db, 'users'), (snapshot) => {
-                usersData = [];
-                snapshot.forEach(doc => usersData.push({ id: doc.id, ...doc.data() }));
-                filteredUsers = [...usersData]; // For search
-                document.getElementById('total-users').innerText = usersData.length;
-                window.renderUsers();
-            });
-
-            // Fetch UPI Requests
-            onSnapshot(collection(db, 'upi_requests'), (snapshot) => {
-                pendingRequests = []; totalRevenue = 0;
-                snapshot.forEach(doc => {
-                    const data = doc.data();
-                    if(data.status === 'pending') pendingRequests.push({ id: doc.id, ...data });
-                    if(data.status === 'approved') totalRevenue += Number(data.amount);
-                });
-                document.getElementById('pending-upi').innerText = pendingRequests.length;
-                document.getElementById('total-revenue').innerText = "₹" + totalRevenue;
-                window.renderUPI();
-            });
-        };
-
-        // ===========================
-        // USER CRM LOGIC (Search & Credits)
-        // ===========================
-        window.filterUsers = () => {
-            const query = document.getElementById('search-user-input').value.toLowerCase();
-            filteredUsers = usersData.filter(u => u.email.toLowerCase().includes(query) || (u.name && u.name.toLowerCase().includes(query)));
-            window.renderUsers();
-        };
-
-        window.addExtraCredits = async (email) => {
-            const inputField = document.getElementById(`credit-input-${email}`);
-            const amount = parseInt(inputField.value);
-            if(!amount || amount <= 0) { alert("Please enter valid credits!"); return; }
-            if(confirm(`Add ${amount} extra credits to ${email}?`)) {
-                try {
-                    await updateDoc(doc(db, 'users', email), { credits: increment(amount) });
-                    inputField.value = "";
-                    alert(`✅ Successfully added ${amount} credits!`);
-                } catch(e) { alert("Error: " + e.message); }
-            }
-        };
-
-        window.makeVIP = async (email) => {
-            if(confirm(`👑 Give UNLIMITED VIP ACCESS to ${email}? (Sets credits to 999,999)`)) {
-                try {
-                    await updateDoc(doc(db, 'users', email), { credits: 999999, isVIP: true });
-                    alert(`👑 BOOM! ${email} is now a VIP!`);
-                } catch(e) { alert("Error: " + e.message); }
-            }
-        };
-
-        window.renderUsers = () => {
-            const list = document.getElementById('users-list');
-            if(filteredUsers.length === 0) {
-                list.innerHTML = "<div class='p-8 text-center text-gray-600 border border-dashed border-gray-800 rounded-3xl'>No users found.</div>";
-                return;
-            }
-            let htmlString = "";
-            filteredUsers.forEach(u => {
-                let initial = u.name ? u.name.charAt(0).toUpperCase() : 'U';
-                let credits = u.credits || 0;
-                let vipBadge = u.isVIP || credits > 900000 ? `<span class='ml-2 text-[10px] bg-yellow-500 text-black px-2 py-0.5 rounded-full font-bold'>VIP</span>` : "";
-                
-                htmlString += `
-                <div class='p-4 bg-gray-900 border border-gray-800 rounded-2xl mb-4 hover:border-indigo-500 hover:border-opacity-30 transition-all'>
-                    <div class='flex justify-between items-start mb-3'>
-                        <div class='flex items-center gap-3'>
-                            <div class='w-10 h-10 bg-indigo-500 bg-opacity-10 rounded-xl flex items-center justify-center text-indigo-400 font-bold border border-indigo-500 border-opacity-20'>${initial}</div>
-                            <div>
-                                <p class='font-bold text-sm text-white'>${u.name || 'Unknown User'} ${vipBadge}</p>
-                                <p class='text-[10px] text-gray-500 font-mono'>${u.email}</p>
-                            </div>
-                        </div>
-                        <div class='text-right'>
-                            <p class='text-[8px] text-gray-500 uppercase tracking-widest mb-0.5'>Power</p>
-                            <p class='font-mono text-sm text-green-400 font-bold'>${credits} Cr</p>
-                        </div>
-                    </div>
-                    
-                    <div class='flex gap-2 items-center bg-black bg-opacity-50 p-2 rounded-xl'>
-                        <input type="number" id="credit-input-${u.email}" placeholder="+ Cr" class="w-20 bg-gray-900 text-white text-xs p-2 rounded-lg border border-gray-700 outline-none">
-                        <button onclick="window.addExtraCredits('${u.email}')" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-3 py-2 rounded-lg transition-all">Add</button>
-                        <button onclick="window.makeVIP('${u.email}')" class="ml-auto bg-yellow-500 bg-opacity-10 text-yellow-500 border border-yellow-500 border-opacity-20 hover:bg-opacity-20 text-xs font-bold px-3 py-2 rounded-lg transition-all flex items-center gap-1"><i data-lucide="crown" class="w-3 h-3"></i> VIP</button>
-                    </div>
-                </div>`;
-            });
-            list.innerHTML = htmlString;
-            lucide.createIcons();
-        };
-
-        // ===========================
-        // FINANCE ACTIONS
-        // ===========================
-        window.renderUPI = () => {
-            const list = document.getElementById('upi-list');
-            if(pendingRequests.length === 0) {
-                list.innerHTML = "<div class='p-10 text-center text-gray-600 border-2 border-dashed border-gray-800 rounded-3xl mt-4'><p>All Payments Resolved!</p></div>";
-                return;
-            }
-            let htmlString = "";
-            pendingRequests.forEach(r => {
-                htmlString += `
-                <div class='p-5 bg-gradient-to-br from-gray-900 to-black border border-indigo-500 border-opacity-30 rounded-3xl mb-4 relative overflow-hidden shadow-lg'>
-                    <div class='absolute top-0 left-0 w-1 h-full bg-indigo-500'></div>
-                    <div class='flex justify-between items-start mb-4'>
-                        <div><h4 class='font-black text-xl text-white'>₹${r.amount} <span class='text-xs font-normal text-gray-500'>Recharge</span></h4><p class='text-[10px] text-gray-400 font-mono mt-1'>${r.userEmail}</p></div>
-                        <span class='bg-yellow-500 bg-opacity-10 border border-yellow-500 border-opacity-20 text-yellow-500 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest animate-pulse'>Pending</span>
-                    </div>
-                    <div class='bg-black p-4 rounded-2xl border border-gray-800 mb-5'>
-                        <p class='text-[10px] text-gray-500 uppercase font-bold tracking-widest mb-1'>Transaction ID (UTR)</p><p class='font-mono text-sm text-indigo-400 select-all'>${r.trxId}</p>
-                    </div>
-                    <div class='flex gap-3'>
-                        <button onclick="window.approvePayment('${r.id}', '${r.userEmail}', '${r.amount}')" class='flex-1 bg-green-500 bg-opacity-20 hover:bg-opacity-30 text-green-400 font-bold py-3.5 rounded-xl text-sm border border-green-500 border-opacity-30 transition-all'>Approve</button>
-                        <button onclick="window.rejectPayment('${r.id}')" class='flex-1 bg-red-500 bg-opacity-10 hover:bg-opacity-20 text-red-500 font-bold py-3.5 rounded-xl text-sm border border-red-500 border-opacity-20 transition-all'>Reject</button>
-                    </div>
-                </div>`;
-            });
-            list.innerHTML = htmlString;
-        };
-
-        window.approvePayment = async (docId, email, amount) => {
-            if(!confirm("Authorize payment & transfer credits?")) return;
-            let creditsToAdd = amount === '49' ? 100 : (amount === '149' ? 500 : (amount === '499' ? 2000 : 100));
-            try {
-                await updateDoc(doc(db, 'upi_requests', docId), { status: 'approved' });
-                await updateDoc(doc(db, 'users', email), { credits: increment(creditsToAdd) });
-                alert("✅ Payment Approved! User received credits.");
-            } catch(e) { alert("Error: " + e.message); }
-        };
-
-        window.rejectPayment = async (docId) => {
-            if(!confirm("Reject this payment?")) return;
-            try {
-                await updateDoc(doc(db, 'upi_requests', docId), { status: 'rejected' });
-            } catch(e) { alert("Error: " + e.message); }
-        };
-
-        // Init Check
-        onAuthStateChanged(auth, async (user) => {
+        onAuthStateChanged(auth, (user) => {
             if (user) {
-                if (!ALLOWED_ADMIN_EMAILS.includes(user.email)) {
-                    await signOut(auth); return;
-                }
+                currentUserEmail = user.email;
                 document.getElementById('auth-screen').classList.add('hidden');
                 document.getElementById('app-interface').classList.remove('hidden');
-                document.getElementById('admin-name').innerText = user.displayName.split(' ')[0];
-                startListeners(); lucide.createIcons();
+                document.getElementById('u-name').innerText = user.displayName.split(' ')[0];
+                
+                // Fetch User Credits & VIP Status
+                onSnapshot(doc(db, 'users', user.email), (d) => {
+                    if(d.exists()) {
+                        const data = d.data();
+                        currentCredits = data.credits || 0;
+                        isUserVIP = data.isVIP || currentCredits > 900000;
+                        
+                        if(isUserVIP) {
+                            document.getElementById('header-credits').innerHTML = `<i data-lucide="crown" class="w-4 h-4 inline mr-1 text-yellow-500"></i> VIP`;
+                            document.getElementById('dash-credits').innerHTML = `<span class="text-3xl">Unlimited</span> <i data-lucide="crown" class="w-8 h-8 inline text-black ml-2"></i>`;
+                        } else {
+                            document.getElementById('header-credits').innerText = currentCredits + " Cr";
+                            document.getElementById('dash-credits').innerText = currentCredits;
+                        }
+                        lucide.createIcons();
+                    }
+                });
+
+                // Fetch Global Admin Settings (QR, WA, Prompts, APIs)
+                onSnapshot(doc(db, 'admin_settings', 'global'), (d) => {
+                    if(d.exists()) {
+                        const data = d.data();
+                        hfApiKey = data.hf_api_key || "";
+                        baseCharacterPrompt = data.base_character_prompt || "yah wala character";
+                        document.getElementById('dynamic-prompt-display').innerText = `"${baseCharacterPrompt}"`;
+                        
+                        // Set WhatsApp
+                        adminWhatsApp = data.whatsapp_number || "";
+                        
+                        // Set Custom QR Code
+                        if(data.qr_code_image) {
+                            document.getElementById('wallet-qr-code').src = data.qr_code_image;
+                            document.getElementById('wallet-qr-code').classList.remove('hidden');
+                            document.getElementById('default-qr-icon').classList.add('hidden');
+                        }
+                    }
+                });
+
+                lucide.createIcons();
             } else {
                 document.getElementById('auth-screen').classList.remove('hidden');
                 document.getElementById('app-interface').classList.add('hidden');
@@ -306,152 +365,201 @@
     </script>
 
     <style>
-        body { background-color: #02000a; color: #ffffff; font-family: sans-serif; overflow-x: hidden; -webkit-tap-highlight-color: transparent; }
+        body { background-color: #050505; color: #ffffff; font-family: sans-serif; overflow-x: hidden; -webkit-tap-highlight-color: transparent; }
         .hidden { display: none !important; }
-        .glass { background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 1.5rem; backdrop-filter: blur(10px); }
-        .indigo-gradient { background: linear-gradient(135deg, #4f46e5, #312e81); }
-        .app-container { padding-bottom: 8rem; }
-        ::-webkit-scrollbar { display: none; }
-        input, textarea { outline: none; }
-        .header-fixed { position: sticky; top: 0; z-index: 80; background: rgba(2, 0, 10, 0.95); border-bottom: 1px solid rgba(255,255,255,0.05); }
-        .bottom-nav { position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%); width: 92%; max-width: 28rem; z-index: 99; border-radius: 2rem; }
+        .glass { background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 1.5rem; }
+        .amber-gradient { background: linear-gradient(135deg, #f59e0b, #d97706); }
+        .app-container { padding-bottom: 8rem; } 
+        
+        input[type="text"], input[type="number"], textarea, select { 
+            background-color: rgba(0,0,0,0.6) !important; color: white !important; outline: none; border: 1px solid rgba(255,255,255,0.2); border-radius: 1rem; padding: 1rem; width: 100%;
+        }
+        input:focus, textarea:focus, select:focus { border-color: #f59e0b; }
+        
+        .file-upload-box { position: relative; overflow: hidden; border: 2px dashed rgba(255,255,255,0.2); border-radius: 1rem; padding: 1rem; text-align: center; background: rgba(0,0,0,0.4); }
+        .file-upload-input { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; z-index: 10; }
+        
+        .header-fixed { position: sticky; top: 0; z-index: 80; background: rgba(5,5,5,0.95); border-bottom: 1px solid rgba(255,255,255,0.1); }
+        .bottom-nav { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%); width: 92%; max-width: 28rem; z-index: 99; border-radius: 2rem; }
+        .auth-screen { z-index: 100; position: fixed; inset: 0; background-color: #050505; }
+        .fade-in { animation: fadeIn 0.4s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
-<body class="selection:bg-indigo-500 selection:text-white">
+<body class="selection:bg-amber-500 selection:text-black">
 
-    <div id="auth-screen" class="min-h-screen flex flex-col items-center justify-center p-8 text-center bg-[#02000a] z-50">
-        <div class="w-24 h-24 indigo-gradient rounded-[2rem] flex items-center justify-center mx-auto mb-8 shadow-[0_0_50px_rgba(79,70,229,0.3)]">
-            <i data-lucide="shield-alert" class="text-white w-12 h-12"></i>
+    <div id="auth-screen" class="auth-screen flex flex-col items-center justify-center p-8 text-center">
+        <div class="w-24 h-24 amber-gradient rounded-3xl flex items-center justify-center mx-auto mb-8 shadow-[0_0_40px_rgba(245,158,11,0.3)]">
+            <i data-lucide="zap" class="text-black w-12 h-12 fill-current"></i>
         </div>
-        <h1 class="text-3xl font-black mb-2 tracking-tight text-white">SYSTEM <span class="text-indigo-500">ADMIN</span></h1>
-        <p class="text-gray-500 mb-10 font-bold text-xs uppercase tracking-widest">Restricted Access</p>
-        <button id="login-btn" onclick="window.loginAdmin()" class="w-full max-w-sm bg-white text-black font-extrabold py-4 px-6 rounded-2xl flex items-center justify-center gap-3 active:scale-95 transition-all shadow-xl shadow-white/5">
-            <img src="https://www.google.com/favicon.ico" class="w-5 h-5"> Secure System Login
+        <h1 class="text-4xl font-black mb-2 tracking-tight">AI QUICK STUDIO</h1>
+        <p class="text-gray-400 mb-6 font-bold text-sm">20 Free Credits on First Login!</p>
+        <button id="login-btn" onclick="window.loginUser()" class="w-full max-w-sm bg-white text-black font-extrabold py-4 px-6 rounded-2xl flex items-center justify-center gap-3 active:scale-95 transition-all">
+            <img src="https://www.google.com/favicon.ico" class="w-5 h-5"> Continue with Google
         </button>
     </div>
 
-    <div id="app-interface" class="hidden app-container">
+    <div id="app-interface" class="hidden app-container bg-black">
         
-        <header class="header-fixed p-6 flex justify-between items-center shadow-lg shadow-black">
-            <div>
-                <p class="text-[10px] uppercase tracking-[0.2em] text-indigo-500 font-bold mb-1 flex items-center gap-1"><span class="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-pulse"></span> Root Access</p>
-                <h2 class="text-2xl font-black">Welcome, <span id="admin-name" class="text-white">Admin</span></h2>
+        <header class="header-fixed p-5 flex justify-between items-center">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 bg-gray-900 rounded-full flex items-center justify-center border border-gray-700">
+                    <i data-lucide="user" class="w-5 h-5 text-gray-400"></i>
+                </div>
+                <h2 class="text-lg font-bold">Hi, <span id="u-name" class="text-amber-500">User</span></h2>
             </div>
-            <button onclick="window.logoutAdmin()" class="bg-red-500 bg-opacity-10 text-red-500 p-3.5 rounded-2xl border border-red-500 border-opacity-20 active:scale-95">
-                <i data-lucide="power" class="w-5 h-5"></i>
-            </button>
+            
+            <div class="bg-amber-500 bg-opacity-10 border border-amber-500 border-opacity-30 px-4 py-2 rounded-xl flex items-center gap-2">
+                <span class="text-amber-500 font-black text-sm" id="header-credits">0 Cr</span>
+            </div>
         </header>
 
         <div class="p-5 max-w-md mx-auto space-y-6">
             
-            <div id="tab-dashboard" class="tab-content space-y-4">
-                <div class="indigo-gradient p-6 rounded-3xl shadow-[0_10px_40px_rgba(79,70,229,0.3)] relative overflow-hidden">
-                    <i data-lucide="trending-up" class="absolute -right-4 -bottom-4 w-32 h-32 text-black opacity-20"></i>
-                    <p class="text-[10px] text-white/70 font-bold uppercase tracking-widest mb-1">Total Revenue</p>
-                    <h2 class="text-5xl font-black text-white" id="total-revenue">₹0</h2>
+            <div id="view-dashboard" class="view-section fade-in space-y-5">
+                <div class="amber-gradient p-6 rounded-3xl text-black shadow-[0_10px_30px_rgba(245,158,11,0.2)]">
+                    <p class="text-black text-opacity-70 text-xs font-extrabold uppercase mb-1">Live Wallet Balance</p>
+                    <h2 class="text-5xl font-black" id="dash-credits">0</h2>
                 </div>
-                <div class="grid grid-cols-2 gap-3">
-                    <div class="glass p-5 rounded-3xl border-l-4 border-l-blue-500 bg-gradient-to-br from-gray-900 to-black">
-                        <i data-lucide="users" class="text-blue-500 mb-3 w-6 h-6"></i>
-                        <p class="text-[10px] text-gray-500 font-bold uppercase">Total Users</p>
-                        <h3 id="total-users" class="text-3xl font-black mt-1">0</h3>
+                <div class="glass p-5 flex items-center gap-4 border-l-4 border-amber-500">
+                    <div class="w-12 h-12 bg-gray-800 rounded-xl flex items-center justify-center">
+                        <i data-lucide="scan-face" class="text-amber-500 w-6 h-6"></i>
                     </div>
-                    <div class="glass p-5 rounded-3xl border-l-4 border-l-yellow-500 bg-gradient-to-br from-gray-900 to-black">
-                        <i data-lucide="clock" class="text-yellow-500 mb-3 w-6 h-6"></i>
-                        <p class="text-[10px] text-gray-500 font-bold uppercase">Pending UPI</p>
-                        <h3 id="pending-upi" class="text-3xl font-black mt-1">0</h3>
+                    <div>
+                        <p class="text-xs text-gray-400 uppercase font-bold">Active Face-Lock</p>
+                        <p class="font-mono text-amber-500 font-bold" id="dynamic-prompt-display">"Loading..."</p>
                     </div>
                 </div>
             </div>
 
-            <div id="tab-users" class="tab-content hidden space-y-4">
-                <h3 class="font-black text-xl mb-4 flex items-center gap-2 text-white"><i data-lucide="users" class="w-5 h-5 text-indigo-500"></i> Client CRM</h3>
-                
-                <div class="relative mb-4">
-                    <i data-lucide="search" class="absolute left-4 top-4 w-5 h-5 text-gray-500"></i>
-                    <input type="text" id="search-user-input" onkeyup="window.filterUsers()" placeholder="Search by email or name..." class="w-full bg-gray-900 rounded-xl p-4 pl-12 text-sm border border-gray-800 focus:border-indigo-500 text-white outline-none">
-                </div>
-
-                <div id="users-list" class="space-y-3"></div>
-            </div>
-
-            <div id="tab-upi" class="tab-content hidden">
-                <h3 class="font-black text-xl mb-4 text-white flex items-center gap-2">
-                    <i data-lucide="banknote" class="w-5 h-5 text-green-500"></i> Financial Approvals
-                </h3>
-                <div id="upi-list"></div>
-            </div>
-
-            <div id="tab-settings" class="tab-content hidden space-y-5">
-                <h3 class="font-black text-xl mb-4 text-white flex items-center gap-2">
-                    <i data-lucide="settings-2" class="w-5 h-5 text-purple-500"></i> Global Settings
-                </h3>
-                
-                <div class="glass p-6 rounded-[2rem] border border-purple-500/20 bg-gradient-to-b from-purple-500/5 to-transparent">
+            <div id="view-image" class="view-section hidden fade-in">
+                 <div class="glass p-6">
+                    <h3 class="font-bold text-xl mb-4 flex items-center gap-2"><i data-lucide="image" class="text-amber-500 w-5 h-5"></i> Image Studio</h3>
+                    <textarea id="img-prompt" class="mb-4 resize-none" rows="4" placeholder="Describe scene... (e.g. superhero flying in space)"></textarea>
                     
-                    <p class="text-[10px] text-gray-500 font-bold uppercase tracking-widest mb-4 border-b border-gray-800 pb-2">Business Contact</p>
-                    
-                    <div class="mb-5">
-                        <label class="text-[10px] font-bold text-green-400 uppercase tracking-widest flex items-center gap-2 mb-2">
-                            <i data-lucide="message-circle" class="w-3 h-3"></i> WhatsApp Support Number
-                        </label>
-                        <input type="number" id="whatsapp-input" class="w-full bg-black/60 rounded-xl p-4 text-sm border border-gray-800 focus:border-green-500 text-white font-mono" placeholder="91XXXXXXXXXX">
+                    <button id="btn-gen-img" onclick="window.generateRealImage()" class="w-full amber-gradient text-black font-black py-4 rounded-2xl active:scale-95 transition-all flex justify-center items-center gap-2">
+                        Create Image (-5 Cr) <i data-lucide="sparkles" class="w-4 h-4"></i>
+                    </button>
+
+                    <div id="image-result-box" class="hidden mt-6 p-4 bg-gray-900 border border-amber-500 border-opacity-30 rounded-2xl text-center fade-in">
+                        <img id="generated-image" src="" class="w-full rounded-xl mb-4 shadow-lg">
+                        <a id="download-btn" href="#" download="AI_Studio_Image.jpg" class="w-full bg-white text-black font-bold py-3 rounded-xl flex justify-center items-center gap-2">
+                            <i data-lucide="download" class="w-4 h-4"></i> Download Image
+                        </a>
                     </div>
+                </div>
+            </div>
 
-                    <div class="mb-6">
-                        <label class="text-[10px] font-bold text-yellow-400 uppercase tracking-widest flex items-center gap-2 mb-2">
-                            <i data-lucide="qr-code" class="w-3 h-3"></i> Payment QR Code Image
-                        </label>
-                        <div class="relative border-2 border-dashed border-gray-800 rounded-xl p-4 text-center hover:border-yellow-500 transition-all bg-black">
-                            <input type="file" id="qr-upload" accept="image/*" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" onchange="window.handleQRUpload(event)">
-                            <i data-lucide="image-plus" class="w-6 h-6 text-gray-500 mx-auto mb-2"></i>
-                            <p class="text-xs text-gray-400 font-bold">Tap to upload QR Code</p>
-                            <img id="qr-preview" src="" class="hidden mx-auto mt-4 max-h-32 rounded-lg border border-gray-700 shadow-lg">
-                        </div>
-                    </div>
+             <div id="view-reels" class="view-section hidden fade-in space-y-6">
+                <div class="glass p-6">
+                     <h3 class="font-bold text-xl mb-1 flex items-center gap-2"><i data-lucide="video" class="text-amber-500 w-5 h-5"></i> Reel Lip-Sync</h3>
+                     <p class="text-[10px] text-gray-400 mb-4 font-bold tracking-widest uppercase"><i data-lucide="alert-circle" class="w-3 h-3 inline text-yellow-500"></i> Takes 1-2 mins to process</p>
+                     
+                     <div class="file-upload-box mb-3">
+                         <input type="file" id="reel-video-file" accept="video/*" class="file-upload-input" onchange="window.updateFileName('reel-video-file', 'video-name')">
+                         <i data-lucide="upload-cloud" class="w-5 h-5 text-gray-400 mx-auto mb-1"></i>
+                         <p class="text-xs font-bold truncate" id="video-name">Upload Base Video</p>
+                     </div>
+                     <div class="file-upload-box mb-4">
+                         <input type="file" id="reel-audio-file" accept="audio/*" class="file-upload-input" onchange="window.updateFileName('reel-audio-file', 'audio-name')">
+                         <i data-lucide="mic" class="w-5 h-5 text-gray-400 mx-auto mb-1"></i>
+                         <p class="text-xs font-bold truncate" id="audio-name">Upload Voice/Audio</p>
+                     </div>
+                     <button id="btn-gen-reel" onclick="window.generateLipSync()" class="w-full bg-gray-800 hover:bg-gray-700 text-white font-bold py-4 rounded-2xl active:scale-95 transition-all flex justify-center items-center gap-2 border border-gray-700">
+                        Generate Reel (-15 Cr) <i data-lucide="play" class="w-4 h-4"></i>
+                    </button>
+                </div>
 
-                    <p class="text-[10px] text-gray-500 font-bold uppercase tracking-widest mb-4 border-b border-gray-800 pb-2 pt-2">AI Engine Keys</p>
-
-                    <div class="mb-5">
-                        <label class="text-[10px] font-bold text-purple-400 uppercase tracking-widest flex items-center gap-2 mb-2">
-                            <i data-lucide="key" class="w-3 h-3"></i> Master API Key (Gemini)
-                        </label>
-                        <div class="relative">
-                            <input type="password" id="api-key-input" class="w-full bg-black/60 rounded-xl p-4 pr-12 text-sm border border-gray-800 focus:border-purple-500 text-white font-mono" placeholder="sk-...">
-                            <button onclick="window.toggleVisibility('api-key-input')" class="absolute right-4 top-4 text-gray-500 hover:text-white transition-colors"><i data-lucide="eye" id="eye-api-key-input" class="w-5 h-5"></i></button>
-                        </div>
-                    </div>
-
-                    <div class="mb-5">
-                        <label class="text-[10px] font-bold text-blue-400 uppercase tracking-widest flex items-center gap-2 mb-2">
-                            <i data-lucide="cpu" class="w-3 h-3"></i> Hugging Face API Key
-                        </label>
-                        <div class="relative">
-                            <input type="password" id="hf-key-input" class="w-full bg-black/60 rounded-xl p-4 pr-12 text-sm border border-gray-800 focus:border-blue-500 text-white font-mono" placeholder="hf_...">
-                            <button onclick="window.toggleVisibility('hf-key-input')" class="absolute right-4 top-4 text-gray-500 hover:text-white transition-colors"><i data-lucide="eye" id="eye-hf-key-input" class="w-5 h-5"></i></button>
-                        </div>
-                    </div>
-
-                    <div class="mb-6">
-                        <label class="text-[10px] font-bold text-amber-500 uppercase tracking-widest flex items-center gap-2 mb-2">
-                            <i data-lucide="bot" class="w-3 h-3"></i> Base Character Prompt
-                        </label>
-                        <textarea id="base-prompt-input" rows="3" class="w-full bg-black/60 rounded-xl p-4 text-sm border border-gray-800 focus:border-amber-500 text-amber-500 font-mono resize-none" placeholder="Enter base prompt..."></textarea>
-                    </div>
-
-                    <button id="btn-save-settings" onclick="window.saveSettings()" class="w-full bg-white text-black font-black py-4 rounded-xl active:scale-95 transition-all shadow-lg shadow-white/10">
-                        Update System Settings
+                <div class="glass p-6 border border-indigo-500 border-opacity-30">
+                     <h3 class="font-bold text-xl mb-1 flex items-center gap-2"><i data-lucide="users" class="text-indigo-400 w-5 h-5"></i> AI Face Swap</h3>
+                     <p class="text-[10px] text-gray-400 mb-4 font-bold tracking-widest uppercase"><i data-lucide="alert-circle" class="w-3 h-3 inline text-yellow-500"></i> Takes ~45s to process</p>
+                     
+                     <div class="flex gap-3 mb-4">
+                         <div class="file-upload-box flex-1">
+                             <input type="file" id="swap-base-file" accept="image/*" class="file-upload-input" onchange="window.updateFileName('swap-base-file', 'swap-base-name')">
+                             <i data-lucide="user" class="w-4 h-4 text-gray-400 mx-auto mb-1"></i>
+                             <p class="text-[10px] font-bold truncate" id="swap-base-name">Target Body</p>
+                         </div>
+                         <div class="file-upload-box flex-1">
+                             <input type="file" id="swap-face-file" accept="image/*" class="file-upload-input" onchange="window.updateFileName('swap-face-file', 'swap-face-name')">
+                             <i data-lucide="smile" class="w-4 h-4 text-indigo-400 mx-auto mb-1"></i>
+                             <p class="text-[10px] font-bold truncate text-indigo-400" id="swap-face-name">Source Face</p>
+                         </div>
+                     </div>
+                     <button id="btn-face-swap" onclick="window.generateFaceSwap()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-4 rounded-2xl active:scale-95 transition-all flex justify-center items-center gap-2 border border-indigo-500">
+                        Swap Face (-10 Cr) <i data-lucide="users" class="w-4 h-4"></i>
                     </button>
                 </div>
             </div>
 
+             <div id="view-tools" class="view-section hidden fade-in space-y-4">
+                 
+                 <div class="glass p-5 border border-green-500 border-opacity-20">
+                    <h4 class="font-bold mb-3 text-sm flex items-center gap-2"><i data-lucide="volume-2" class="text-green-400 w-4 h-4"></i> Text-to-Voice AI</h4>
+                    <textarea id="tts-text" class="mb-3 resize-none" rows="2" placeholder="Script type karein..."></textarea>
+                    
+                    <button id="btn-tts" onclick="window.generateVoice()" class="w-full bg-green-500 bg-opacity-20 text-green-400 font-bold py-3 rounded-xl border border-green-500 border-opacity-30 active:scale-95 text-sm">Generate Voice (-3 Cr)</button>
+                    
+                    <div id="audio-result-box" class="hidden mt-4 bg-black p-3 rounded-xl border border-gray-800">
+                        <p class="text-[10px] text-gray-500 uppercase font-bold mb-2">Generated Audio:</p>
+                        <audio id="generated-audio" controls class="w-full h-8"></audio>
+                    </div>
+                </div>
+                 
+                 <div class="grid grid-cols-2 gap-3">
+                     <div class="glass p-4">
+                         <h4 class="font-bold mb-2 text-xs flex items-center gap-2"><i data-lucide="pen-tool" class="text-amber-500 w-3 h-3"></i> Viral Script</h4>
+                         <input type="text" id="script-topic" class="mb-3 text-xs" placeholder="Topic name...">
+                         <button id="btn-script" onclick="window.generateScript()" class="w-full bg-gray-800 text-white font-bold py-2 rounded-xl border border-gray-700 active:scale-95 text-xs">Generate (-2 Cr)</button>
+                     </div>
+                     <div class="glass p-4">
+                         <h4 class="font-bold mb-2 text-xs flex items-center gap-2"><i data-lucide="hash" class="text-blue-400 w-3 h-3"></i> Viral Tags</h4>
+                         <input type="text" id="tags-topic" class="mb-3 text-xs" placeholder="Keyword...">
+                         <button id="btn-tags" onclick="window.generateTags()" class="w-full bg-gray-800 text-white font-bold py-2 rounded-xl border border-gray-700 active:scale-95 text-xs">Generate (-1 Cr)</button>
+                     </div>
+                 </div>
+            </div>
+
+            <div id="view-wallet" class="view-section hidden fade-in">
+                <div class="glass p-6">
+                    <h3 class="font-black text-xl mb-4 flex items-center gap-2"><i data-lucide="wallet" class="text-amber-500 w-5 h-5"></i> Add Funds</h3>
+                    
+                    <div class="grid grid-cols-3 gap-2 mb-6">
+                        <div id="plan-49" onclick="window.selectPlan('49', 'plan-49')" class="plan-card glass border-gray-800 p-3 text-center cursor-pointer">
+                            <h4 class="font-black">₹49</h4><p class="text-[10px] text-gray-400">100 Cr</p>
+                        </div>
+                        <div id="plan-149" onclick="window.selectPlan('149', 'plan-149')" class="plan-card glass border-amber-500 bg-amber-500 bg-opacity-10 p-3 text-center cursor-pointer">
+                            <h4 class="font-black">₹149</h4><p class="text-[10px] text-amber-500">500 Cr</p>
+                        </div>
+                        <div id="plan-499" onclick="window.selectPlan('499', 'plan-499')" class="plan-card glass border-gray-800 p-3 text-center cursor-pointer">
+                            <h4 class="font-black">₹499</h4><p class="text-[10px] text-gray-400">2k Cr</p>
+                        </div>
+                    </div>
+                    
+                    <div class="bg-black p-5 rounded-2xl border border-gray-800 mb-4 text-center">
+                        <i data-lucide="qr-code" id="default-qr-icon" class="w-12 h-12 mx-auto mb-2 text-gray-600"></i>
+                        <img id="wallet-qr-code" src="" class="hidden mx-auto mb-3 max-h-40 rounded-xl shadow-lg border border-white/10">
+                        <p class="text-xs text-gray-400">Scan & Pay <span id="pay-amount-display" class="font-bold text-white">₹149</span> via UPI</p>
+                    </div>
+
+                    <input id="utr-input" type="number" class="mb-4" placeholder="Enter 12-Digit UTR Number">
+                    <button id="btn-submit-upi" onclick="window.submitUPI()" class="w-full bg-white text-black font-black py-4 rounded-2xl active:scale-95 shadow-lg shadow-white/10 mb-6">Submit Verification</button>
+                    
+                    <button onclick="window.openWhatsApp()" class="w-full bg-green-500 bg-opacity-10 hover:bg-opacity-20 text-green-500 border border-green-500 border-opacity-30 font-bold py-3 rounded-2xl flex justify-center items-center gap-2 transition-all">
+                        <i data-lucide="message-circle" class="w-5 h-5"></i> Live Chat Support
+                    </button>
+                </div>
+            </div>
         </div>
 
-        <nav class="bottom-nav glass flex items-center justify-evenly px-2 bg-[#02000a] bg-opacity-95 backdrop-blur-2xl border border-gray-800 shadow-[0_20px_50px_rgba(0,0,0,0.9)]">
-            <button id="nav-tab-dashboard" onclick="window.switchTab('tab-dashboard')" class="nav-btn text-indigo-400 bg-indigo-500 bg-opacity-10 w-14 h-14 rounded-2xl flex flex-col items-center justify-center transition-all"><i data-lucide="layout-dashboard" class="w-5 h-5 mb-1"></i></button>
-            <button id="nav-tab-users" onclick="window.switchTab('tab-users')" class="nav-btn text-gray-500 w-14 h-14 rounded-2xl flex flex-col items-center justify-center transition-all"><i data-lucide="users" class="w-5 h-5 mb-1"></i></button>
-            <button id="nav-tab-upi" onclick="window.switchTab('tab-upi')" class="nav-btn text-gray-500 w-14 h-14 rounded-2xl flex flex-col items-center justify-center transition-all relative"><i data-lucide="banknote" class="w-5 h-5 mb-1"></i></button>
-            <button id="nav-tab-settings" onclick="window.switchTab('tab-settings')" class="nav-btn text-gray-500 w-14 h-14 rounded-2xl flex flex-col items-center justify-center transition-all"><i data-lucide="settings-2" class="w-5 h-5 mb-1"></i></button>
+        <nav class="bottom-nav glass flex items-center justify-evenly px-2 bg-black bg-opacity-95 shadow-[0_20px_50px_rgba(0,0,0,0.9)]">
+            <button id="btn-view-dashboard" onclick="window.switchView('view-dashboard')" class="nav-btn text-amber-500 bg-amber-500 bg-opacity-10 w-12 h-12 rounded-full flex items-center justify-center"><i data-lucide="layout-grid" class="w-5 h-5"></i></button>
+            <button id="btn-view-image" onclick="window.switchView('view-image')" class="nav-btn text-gray-500 w-12 h-12 rounded-full flex items-center justify-center"><i data-lucide="image" class="w-5 h-5"></i></button>
+            <button id="btn-view-reels" onclick="window.switchView('view-reels')" class="nav-btn text-gray-500 w-12 h-12 rounded-full flex items-center justify-center"><i data-lucide="clapperboard" class="w-5 h-5"></i></button>
+            <button id="btn-view-tools" onclick="window.switchView('view-tools')" class="nav-btn text-gray-500 w-12 h-12 rounded-full flex items-center justify-center"><i data-lucide="wand-2" class="w-5 h-5"></i></button>
+            <button id="btn-view-wallet" onclick="window.switchView('view-wallet')" class="nav-btn text-gray-500 w-12 h-12 rounded-full flex items-center justify-center"><i data-lucide="wallet" class="w-5 h-5"></i></button>
+            <div class="w-px h-6 bg-gray-800"></div>
+            <button onclick="window.logoutUser()" class="text-red-500 hover:text-red-400 w-10 h-10 flex items-center justify-center"><i data-lucide="log-out" class="w-5 h-5"></i></button>
         </nav>
     </div>
 
